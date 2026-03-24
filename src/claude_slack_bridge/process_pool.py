@@ -81,12 +81,13 @@ class ProcessPool:
             "--output-format", "stream-json",
             "--input-format", "stream-json",
             "--verbose",
-            "--session-id", session_id,
-            "--setting-sources", "project,local",  # Skip user settings (hooks)
+            "--setting-sources", "project,local",
             "--system-prompt", "When presenting choices to the user, end your response with [OPTIONS: choice1 | choice2 | choice3] format. Max 5 options.",
         ]
         if resume:
             cmd += ["--resume", session_id]
+        else:
+            cmd += ["--session-id", session_id]
         if name:
             cmd += ["--name", name]
         if extra_args:
