@@ -195,7 +195,7 @@ class Daemon:
                     await self._handle_dm(event)
 
     async def _handle_mention(self, event: dict) -> None:
-        """Handle @bridge mention — create new session in PROCESS mode."""
+        """Handle @bridge mention — create new session or resume existing."""
         channel_id = event.get("channel", "")
         text = event.get("text", "")
         thread_ts = event.get("thread_ts") or event.get("ts", "")
@@ -208,21 +208,70 @@ class Daemon:
         if not prompt:
             prompt = "Hello"
 
+        # Check for "resume <session-id>" command
+        parts = prompt.split()
+        if len(parts) >= 2 and parts[0].lower() == "resume":
+            sid = parts[1]
+            session = self._session_mgr.get(sid)
+            if session:
+                # Re-bind session to this thread
+                session.channel_id = channel_id
+                session.thread_ts = thread_ts
+                self._session_mgr._thread_index[(channel_id, thread_ts)] = sid
+                self._session_mgr._save()
+                blocks = build_session_header_blocks(
+                    session_id=sid, directory=self._config.work_dir
+                )
+                await self._slack.post_blocks(
+                    channel_id, blocks, f"Resumed: {session.session_name}", thread_ts
+                )
+                # Start --print process to continue
+                follow_up = " ".join(parts[2:]) if len(parts) > 2 else None
+                await self._resume_process(session, follow_up or "继续")
+                return
+            else:
+                await self._slack.post_text(
+                    channel_id, f"❌ Session `{sid}` not found", thread_ts
+                )
+                return
+
         await self._start_new_session(channel_id, thread_ts, prompt)
 
     async def _handle_dm(self, event: dict) -> None:
-        """Handle DM message — create new session or continue existing."""
+        """Handle DM message — create new session or resume existing."""
         channel_id = event.get("channel", "")
         text = event.get("text", "")
         msg_ts = event.get("ts", "")
 
         await self._slack.add_reaction(channel_id, msg_ts, "eyes")
 
-        # Strip bot mention if present
         if self._bot_user_id:
             text = text.replace(f"<@{self._bot_user_id}>", "").strip()
         if not text:
             text = "Hello"
+
+        # Check for "resume <session-id>"
+        parts = text.split()
+        if len(parts) >= 2 and parts[0].lower() == "resume":
+            sid = parts[1]
+            session = self._session_mgr.get(sid)
+            if session:
+                session.channel_id = channel_id
+                session.thread_ts = msg_ts
+                self._session_mgr._thread_index[(channel_id, msg_ts)] = sid
+                self._session_mgr._save()
+                blocks = build_session_header_blocks(
+                    session_id=sid, directory=self._config.work_dir
+                )
+                await self._slack.post_blocks(
+                    channel_id, blocks, f"Resumed: {session.session_name}", msg_ts
+                )
+                follow_up = " ".join(parts[2:]) if len(parts) > 2 else None
+                await self._resume_process(session, follow_up or "继续")
+                return
+            else:
+                await self._slack.post_text(channel_id, f"❌ Session `{sid}` not found", msg_ts)
+                return
 
         await self._start_new_session(channel_id, msg_ts, text)
 
