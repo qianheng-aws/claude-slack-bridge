@@ -1,0 +1,4 @@
+#!/bin/bash
+# Wrapper that activates the venv before running the hook CLI
+export LD_LIBRARY_PATH=/workplace/qianheng/MeshClaw/build/MeshClaw/MeshClaw-1.0/AL2_x86_64/DEV.STD.PTHREAD/build/private/tmp/brazil-path/build.libfarm/python3.10/lib:${LD_LIBRARY_PATH:-}
+exec /workplace/qianheng/claude-slack-bridge/.venv/bin/claude-slack-bridge hook "$@"

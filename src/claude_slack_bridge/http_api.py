@@ -29,12 +29,12 @@ async def _resolve_channel_id(slack: SlackClient, channel_name: str) -> str:
     """Resolve channel name to ID. Caches the result.
     If channel_name already looks like a Slack ID (starts with C/G), return as-is.
     """
-    if channel_name.startswith(("C", "G")) and " " not in channel_name:
+    if channel_name.startswith(("C", "G", "D")) and " " not in channel_name:
         return channel_name
     if channel_name in _channel_id_cache:
         return _channel_id_cache[channel_name]
     name = channel_name.lstrip("#")
-    resp = await slack.web.conversations_list(types="public_channel,private_channel", limit=200)
+    resp = await slack.web.conversations_list(types="public_channel", limit=200)
     for ch in resp.get("channels", []):
         if ch["name"] == name:
             _channel_id_cache[channel_name] = ch["id"]
