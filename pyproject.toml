@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "claude-slack-bridge"
 version = "0.1.0"
 description = "Bridge Claude Code TUI sessions to Slack"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "aiohttp>=3.9,<4",
     "slack-sdk>=3.27,<4",
