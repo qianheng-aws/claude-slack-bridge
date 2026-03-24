@@ -1,6 +1,33 @@
 from __future__ import annotations
 
 import json
+import re
+
+_OPTIONS_RE = re.compile(r"\[OPTIONS:\s*(.+?)\]\s*$", re.MULTILINE)
+OPTIONS_ACTION_PREFIX = "options_choice_"
+
+
+def extract_options(text: str) -> tuple[str, list[str]]:
+    """Extract [OPTIONS: A | B | C] from text. Returns (cleaned_text, choices)."""
+    m = _OPTIONS_RE.search(text)
+    if not m:
+        return text, []
+    choices = [c.strip() for c in m.group(1).split("|") if c.strip()]
+    return text[: m.start()].rstrip(), choices
+
+
+def build_options_blocks(choices: list[str]) -> list[dict]:
+    """Build Slack action buttons from OPTIONS choices."""
+    buttons = [
+        {
+            "type": "button",
+            "text": {"type": "plain_text", "text": c[:75]},
+            "action_id": f"{OPTIONS_ACTION_PREFIX}{i}",
+            "value": c,
+        }
+        for i, c in enumerate(choices[:5])
+    ]
+    return [{"type": "actions", "elements": buttons}]
 
 
 def truncate_text(text: str, max_chars: int) -> str:

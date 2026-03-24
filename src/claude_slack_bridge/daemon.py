@@ -20,12 +20,15 @@ from claude_slack_bridge.process_pool import ProcessPool
 from claude_slack_bridge.session_manager import Session, SessionManager, SessionMode
 from claude_slack_bridge.slack_client import SlackClient
 from claude_slack_bridge.slack_formatter import (
+    OPTIONS_ACTION_PREFIX,
     build_approval_blocks,
+    build_options_blocks,
     build_permission_denied_blocks,
     build_response_blocks,
     build_session_header_blocks,
     build_tool_notification_blocks,
     build_user_prompt_blocks,
+    extract_options,
 )
 from claude_slack_bridge.stream_parser import StreamEvent
 
@@ -103,7 +106,15 @@ class Daemon:
             if session_id in self._stream_state:
                 state = self._stream_state.pop(session_id)
                 if state.get("text"):
+                    # Extract OPTIONS from final text
+                    cleaned, choices = extract_options(state["text"])
+                    state["text"] = cleaned
                     await self._flush_stream(session, state)
+                    if choices:
+                        blocks = build_options_blocks(choices)
+                        await self._slack.post_blocks(
+                            session.channel_id, blocks, "Choose an option", session.thread_ts
+                        )
             # Report permission denials
             denials = evt.result.get("permission_denials", [])
             if denials:
@@ -309,6 +320,23 @@ class Daemon:
 
         elif action_id == "reject_tool":
             self._approval_mgr.resolve(value, "rejected")
+
+        elif action_id.startswith(OPTIONS_ACTION_PREFIX):
+            # OPTIONS button clicked — send choice to Claude
+            # Find session from the thread
+            thread_ts = msg.get("thread_ts", msg_ts)
+            if channel_id and thread_ts:
+                session = self._session_mgr.find_by_thread(channel_id, thread_ts)
+                if session:
+                    cp = self._pool.get(session.session_id)
+                    if cp:
+                        await cp.send_message(value)
+                    # Delete the buttons message
+                    if self._slack and msg_ts:
+                        try:
+                            await self._slack._web.chat_delete(channel=channel_id, ts=msg_ts)
+                        except Exception:
+                            pass
 
         elif action_id == "trust_session":
             self._trusted_sessions.add(value)
