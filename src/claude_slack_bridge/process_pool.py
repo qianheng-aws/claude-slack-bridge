@@ -88,6 +88,8 @@ class ProcessPool:
             cmd += ["--resume", session_id]
         else:
             cmd += ["--session-id", session_id]
+        # bypassPermissions works with both new and resumed sessions
+        cmd += ["--permission-mode", "bypassPermissions"]
         if name:
             cmd += ["--name", name]
         if extra_args:
