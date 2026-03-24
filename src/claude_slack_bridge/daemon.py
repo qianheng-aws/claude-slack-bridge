@@ -327,9 +327,9 @@ class Daemon:
             if not session:
                 return web.json_response({"error": "unknown session"}, status=404)
 
-            # If session is in PROCESS mode, hooks come from our own --print process.
-            # Don't switch to HOOK mode — just forward to Slack.
-            if session.mode == SessionMode.PROCESS.value:
+            # If session is in PROCESS mode AND our --print process is alive,
+            # hooks come from that process — just ack without switching.
+            if session.mode == SessionMode.PROCESS.value and self._pool.get(session.session_id):
                 session.touch()
                 if hook_type == "pre-tool-use":
                     return web.Response(text="approved")
