@@ -25,6 +25,7 @@ class BridgeConfig:
     stream_throttle_ms: int = 1000
     hook_heartbeat_timeout_secs: int = 300
     claude_args: list[str] = field(default_factory=list)
+    work_dir: str = ""  # cwd for claude processes; empty = home dir
     slack_app_token: str = ""
     slack_bot_token: str = ""
 
@@ -91,6 +92,7 @@ def load_config(config_dir: Path | None = None) -> BridgeConfig:
         stream_throttle_ms=file_data.get("stream_throttle_ms", 1000),
         hook_heartbeat_timeout_secs=file_data.get("hook_heartbeat_timeout_secs", 300),
         claude_args=file_data.get("claude_args", []),
+        work_dir=file_data.get("work_dir", str(Path.home())),
         slack_app_token=app_token,
         slack_bot_token=bot_token,
     )
