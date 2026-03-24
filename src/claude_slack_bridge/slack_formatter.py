@@ -6,6 +6,23 @@ import re
 _OPTIONS_RE = re.compile(r"\[OPTIONS:\s*(.+?)\]\s*$", re.MULTILINE)
 OPTIONS_ACTION_PREFIX = "options_choice_"
 
+# Markdown → Slack mrkdwn conversion patterns
+_MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
+_MD_HEADER = re.compile(r"^#{1,6}\s+(.+)$", re.MULTILINE)
+_MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_MD_CODE_LANG = re.compile(r"```\w*\n", re.MULTILINE)
+_MD_IMG = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+
+
+def md_to_mrkdwn(text: str) -> str:
+    """Convert Markdown to Slack mrkdwn format."""
+    text = _MD_IMG.sub(r"<\2|\1>", text)          # images → links
+    text = _MD_LINK.sub(r"<\2|\1>", text)         # [text](url) → <url|text>
+    text = _MD_CODE_LANG.sub("```\n", text)       # ```python → ```
+    text = _MD_BOLD.sub(r"*\1*", text)            # **bold** → *bold*
+    text = _MD_HEADER.sub(r"*\1*", text)          # # Header → *Header*
+    return text
+
 
 def extract_options(text: str) -> tuple[str, list[str]]:
     """Extract [OPTIONS: A | B | C] from text. Returns (cleaned_text, choices)."""
@@ -197,7 +214,7 @@ def build_post_tool_blocks(
 
 
 def build_response_blocks(response_text: str) -> list[dict]:
-    text = truncate_text(response_text, 2900)
+    text = md_to_mrkdwn(truncate_text(response_text, 2900))
     return [
         {
             "type": "section",
