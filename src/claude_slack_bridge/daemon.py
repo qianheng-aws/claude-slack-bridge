@@ -140,7 +140,21 @@ class Daemon:
     # ── Socket Mode handlers ──
 
     async def _on_socket_event(self, client: SocketModeClient, req: SocketModeRequest) -> None:
+        logger.info("Socket event: type=%s", req.type)
         await client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
+
+        if req.type == "interactive":
+            payload = req.payload or {}
+            for action in payload.get("actions", []):
+                await self._handle_interactive(action, payload)
+
+        elif req.type == "events_api":
+            event = (req.payload or {}).get("event", {})
+            etype = event.get("type", "")
+            logger.info("Event: type=%s user=%s subtype=%s bot_id=%s thread_ts=%s text=%s",
+                        etype, event.get("user", ""), event.get("subtype", ""),
+                        event.get("bot_id", ""), event.get("thread_ts", ""),
+                        str(event.get("text", ""))[:80])
 
         if req.type == "interactive":
             payload = req.payload or {}
@@ -154,7 +168,7 @@ class Daemon:
             if etype == "app_mention":
                 await self._handle_mention(event)
             elif etype == "message" and "subtype" not in event and "bot_id" not in event:
-                # Also skip messages from our own bot user
+                # Skip messages from our own bot user
                 if event.get("user") == self._bot_user_id:
                     return
                 thread_ts = event.get("thread_ts")
@@ -165,7 +179,8 @@ class Daemon:
         """Handle @bridge mention — create new session in PROCESS mode."""
         channel_id = event.get("channel", "")
         text = event.get("text", "")
-        thread_ts = event.get("ts", "")  # Use message ts as thread root
+        # Use existing thread_ts if in a thread, otherwise use message ts as thread root
+        thread_ts = event.get("thread_ts") or event.get("ts", "")
 
         # Strip bot mention from text
         prompt = text
@@ -315,7 +330,15 @@ class Daemon:
             if not session:
                 return web.json_response({"error": "unknown session"}, status=404)
 
-            # Switch to HOOK mode, kill --print process if running
+            # If session is in PROCESS mode, hooks come from our own --print process.
+            # Don't switch to HOOK mode — just forward to Slack.
+            if session.mode == SessionMode.PROCESS.value:
+                session.touch()
+                if hook_type == "pre-tool-use":
+                    return web.Response(text="approved")
+                return web.Response(text="ok")
+
+            # Switch to HOOK mode (TUI is active), kill --print process if running
             if session.mode != SessionMode.HOOK.value:
                 await self._pool.terminate(session.session_id)
                 self._session_mgr.set_mode(session.session_id, SessionMode.HOOK)

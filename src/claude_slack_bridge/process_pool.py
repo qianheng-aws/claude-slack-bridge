@@ -73,6 +73,7 @@ class ProcessPool:
         """Start a claude --print process for a session."""
         # Kill existing process for this session
         if session_id in self._processes:
+            logger.warning("Killing existing process for session %s before starting new one", session_id)
             await self._processes[session_id].terminate()
 
         cmd = [
@@ -107,11 +108,14 @@ class ProcessPool:
             self._read_stdout(cp, on_event, on_exit)
         )
 
-        # Send initial prompt via stdin (not -p flag, which exits after one turn)
+        # Wait for init event before sending first message
         if prompt:
-            # Small delay to let process initialize
-            await asyncio.sleep(0.5)
-            await cp.send_message(prompt)
+            await asyncio.sleep(2)
+            if cp.alive:
+                await cp.send_message(prompt)
+            else:
+                logger.error("Claude process died before sending prompt, stderr: %s",
+                             (await proc.stderr.read()).decode()[:500] if proc.stderr else "n/a")
 
         return cp
 
@@ -153,6 +157,7 @@ class ProcessPool:
 
     async def terminate(self, session_id: str) -> None:
         if cp := self._processes.get(session_id):
+            logger.warning("Terminating process %s (called explicitly)", session_id)
             await cp.terminate()
 
     async def terminate_all(self) -> None:
