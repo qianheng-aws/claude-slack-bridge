@@ -114,5 +114,9 @@ class SessionManager:
     def _load(self) -> None:
         raw = json.loads(self._path.read_text())
         for sid, d in raw.items():
-            self._sessions[sid] = Session(**d)
+            # Compat: drop unknown fields, add defaults for new fields
+            known = {f.name for f in Session.__dataclass_fields__.values()}
+            clean = {k: v for k, v in d.items() if k in known}
+            clean.setdefault("mode", SessionMode.IDLE.value)
+            self._sessions[sid] = Session(**clean)
         self._rebuild_index()
