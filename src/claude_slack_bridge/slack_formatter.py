@@ -60,8 +60,8 @@ def build_approval_blocks(
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    f"*Tool Request: {tool_name}*\n"
-                    f"Session: `{session_id}` - `{session_name}`\n\n"
+                    f"🔐 *Tool Request: {tool_name}*\n"
+                    f"Session: `{session_name}`\n\n"
                     f"```\n{detail}\n```"
                 ),
             },
@@ -71,14 +71,26 @@ def build_approval_blocks(
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "Approve"},
+                    "text": {"type": "plain_text", "text": "✅ Approve"},
                     "style": "primary",
                     "action_id": "approve_tool",
                     "value": request_id,
                 },
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "Reject"},
+                    "text": {"type": "plain_text", "text": "🔓 Trust Session"},
+                    "action_id": "trust_session",
+                    "value": session_id,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "⚡ YOLO"},
+                    "action_id": "yolo_mode",
+                    "value": request_id,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "❌ Reject"},
                     "style": "danger",
                     "action_id": "reject_tool",
                     "value": request_id,
@@ -86,6 +98,42 @@ def build_approval_blocks(
             ],
         },
     ]
+
+
+def build_tool_notification_blocks(
+    tool_name: str,
+    tool_input: dict,
+) -> list[dict]:
+    """Notification-only block for PROCESS mode (no approval buttons)."""
+    if tool_name == "Bash":
+        detail = tool_input.get("command", json.dumps(tool_input))
+    elif tool_name in ("Read", "Write", "Edit"):
+        detail = tool_input.get("file_path", json.dumps(tool_input))
+    else:
+        detail = json.dumps(tool_input, indent=2)
+
+    detail = truncate_text(str(detail), 2500)
+
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"🔧 *{tool_name}*\n```\n{detail}\n```",
+            },
+        },
+    ]
+
+
+def build_permission_denied_blocks(denials: list[dict]) -> list[dict]:
+    """Show permission denials from Claude Code."""
+    lines = []
+    for d in denials[:5]:
+        tool = d.get("tool_name", "unknown")
+        reason = d.get("reason", "permission denied")
+        lines.append(f"• *{tool}*: {reason}")
+    text = "🚫 *Permission Denied*\n" + "\n".join(lines)
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
 
 
 def build_post_tool_blocks(

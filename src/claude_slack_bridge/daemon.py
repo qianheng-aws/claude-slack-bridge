@@ -21,8 +21,10 @@ from claude_slack_bridge.session_manager import Session, SessionManager, Session
 from claude_slack_bridge.slack_client import SlackClient
 from claude_slack_bridge.slack_formatter import (
     build_approval_blocks,
+    build_permission_denied_blocks,
     build_response_blocks,
     build_session_header_blocks,
+    build_tool_notification_blocks,
     build_user_prompt_blocks,
 )
 from claude_slack_bridge.stream_parser import StreamEvent
@@ -55,6 +57,9 @@ class Daemon:
         self._bot_user_id: str = ""
         # Throttle state: session_id -> (msg_ts, last_update, accumulated_text)
         self._stream_state: dict[str, dict] = {}
+        # Trust/YOLO state
+        self._trusted_sessions: set[str] = set()  # session_ids with trust mode
+        self._yolo_mode: bool = False  # global auto-approve
 
     # ── Stream event handler (PROCESS mode: claude stdout → Slack) ──
 
@@ -68,15 +73,32 @@ class Daemon:
 
         elif evt.raw_type == "assistant" and evt.tool_use:
             tool = evt.tool_use
-            # TODO: approval flow for non-whitelisted tools
-            logger.info("Tool use: %s in session %s", tool.get("name"), session_id)
+            tool_name = tool.get("name", "")
+            tool_input = tool.get("input", {})
+            # In PROCESS mode, claude auto-executes tools based on permission-mode.
+            # We just notify in Slack.
+            blocks = build_tool_notification_blocks(tool_name, tool_input)
+            await self._slack.post_blocks(
+                session.channel_id, blocks, f"Tool: {tool_name}", session.thread_ts
+            )
+            # Flush any accumulated stream text before tool notification
+            if session_id in self._stream_state:
+                state = self._stream_state.pop(session_id)
+                await self._flush_stream(session, state)
 
         elif evt.raw_type == "result":
-            # Flush any remaining streamed text
+            # Flush remaining streamed text
             if session_id in self._stream_state:
                 state = self._stream_state.pop(session_id)
                 if state.get("text"):
                     await self._flush_stream(session, state)
+            # Report permission denials
+            denials = evt.result.get("permission_denials", [])
+            if denials:
+                blocks = build_permission_denied_blocks(denials)
+                await self._slack.post_blocks(
+                    session.channel_id, blocks, "Permission denied", session.thread_ts
+                )
 
     async def _stream_text_to_slack(self, session: Session, text: str) -> None:
         """Throttled streaming: update Slack message at most every 1s."""
@@ -223,8 +245,43 @@ class Daemon:
     async def _handle_interactive(self, action: dict, payload: dict) -> None:
         action_id = action.get("action_id", "")
         value = action.get("value", "")
-        if action_id in ("approve_tool", "reject_tool"):
-            self._approval_mgr.resolve(value, "approved" if action_id == "approve_tool" else "rejected")
+        channel_info = payload.get("channel", {})
+        channel_id = channel_info.get("id", "")
+        msg = payload.get("message", {})
+        msg_ts = msg.get("ts", "")
+
+        if action_id == "approve_tool":
+            self._approval_mgr.resolve(value, "approved")
+
+        elif action_id == "reject_tool":
+            self._approval_mgr.resolve(value, "rejected")
+
+        elif action_id == "trust_session":
+            # value = session_id
+            self._trusted_sessions.add(value)
+            # Resolve any pending approval for this session
+            for state in list(self._approval_mgr._pending.values()):
+                state.resolve("approved")
+            if self._slack and channel_id and msg_ts:
+                from claude_slack_bridge.slack_formatter import build_approval_resolved_blocks
+                blocks = build_approval_resolved_blocks("Session", "trusted", value)
+                try:
+                    await self._slack.update_blocks(channel_id, msg_ts, blocks)
+                except Exception:
+                    pass
+            logger.info("Trust mode enabled for session %s", value)
+
+        elif action_id == "yolo_mode":
+            self._yolo_mode = True
+            self._approval_mgr.resolve(value, "approved")
+            if self._slack and channel_id and msg_ts:
+                from claude_slack_bridge.slack_formatter import build_approval_resolved_blocks
+                blocks = build_approval_resolved_blocks("Global", "YOLO enabled", value)
+                try:
+                    await self._slack.update_blocks(channel_id, msg_ts, blocks)
+                except Exception:
+                    pass
+            logger.info("YOLO mode enabled globally")
 
     # ── HTTP API (for HOOK mode / TUI) ──
 
@@ -276,13 +333,43 @@ class Daemon:
                     await self._slack.post_blocks(
                         session.channel_id, blocks, "Claude response", session.thread_ts
                     )
-                # TUI turn ended — check if TUI is still alive via heartbeat
-            elif hook_type == "pre-tool-use":
+            elif hook_type == "pre-tool-use" and self._slack:
                 tool_name = payload.get("tool_name", "")
-                if not self._config.require_approval or tool_name in self._config.auto_approve_tools:
+                tool_input = payload.get("tool_input", {})
+
+                # Auto-approve: whitelist, trust, or yolo
+                if (not self._config.require_approval
+                        or tool_name in self._config.auto_approve_tools
+                        or self._yolo_mode
+                        or session_key in self._trusted_sessions):
+                    # Notify in Slack
+                    blocks = build_tool_notification_blocks(tool_name, tool_input)
+                    await self._slack.post_blocks(
+                        session.channel_id, blocks, f"Auto-approved: {tool_name}", session.thread_ts
+                    )
                     return web.Response(text="approved")
-                # TODO: full approval flow for HOOK mode
-                return web.Response(text="approved")
+
+                # Interactive approval: post buttons, wait for click
+                request_id = payload.get("request_id", str(uuid.uuid4()))
+                state = self._approval_mgr.create(request_id)
+
+                blocks = build_approval_blocks(
+                    tool_name, tool_input, session_key,
+                    session.session_name, request_id,
+                )
+                await self._slack.post_blocks(
+                    session.channel_id, blocks, f"Approve {tool_name}?", session.thread_ts
+                )
+
+                # Block until user clicks button or timeout
+                decision = await state.wait(timeout=self._config.approval_timeout_secs)
+                self._approval_mgr.cleanup(request_id)
+
+                # If trust was enabled during wait, approve
+                if session_key in self._trusted_sessions or self._yolo_mode:
+                    decision = "approved"
+
+                return web.Response(text=decision if decision != "timed_out" else "rejected")
 
             return web.Response(text="ok")
 
