@@ -437,7 +437,16 @@ class Daemon:
                 thread_ts,
             )
         elif session.mode == SessionMode.IDLE.value:
-            await self._resume_process(session, text)
+            # Check if TUI was recently active (within 60s)
+            tui_ts = getattr(session, "_tui_active", 0)
+            if time.time() - tui_ts < 60:
+                await self._slack.post_text(
+                    channel_id,
+                    "⚠️ TUI 刚刚还在使用，请在终端操作，或等一会儿再从 Slack 发消息",
+                    thread_ts,
+                )
+            else:
+                await self._resume_process(session, text)
 
     async def _resume_process(self, session: Session, text: str | None) -> None:
         self._session_mgr.set_mode(session.session_id, SessionMode.PROCESS)
@@ -528,12 +537,13 @@ class Daemon:
             if not session:
                 return web.json_response({"error": "unknown session"}, status=404)
 
-            # If our --print process is alive, ack silently (hook from --print itself)
-            if session.mode == SessionMode.PROCESS.value and self._pool.get(session.session_id):
-                session.touch()
-                return web.Response(text="approved" if hook_type == "pre-tool-use" else "ok")
+            # TUI hook arrived — kill any --print process (TUI takes priority)
+            if self._pool.get(session.session_id):
+                await self._pool.terminate(session.session_id)
+                self._session_mgr.set_mode(session.session_id, SessionMode.IDLE)
 
             session.touch()
+            session._tui_active = time.time()  # Mark TUI as active
 
             # Sync TUI content to Slack (without blocking or switching modes)
             if hook_type == "user-prompt" and self._slack and session.channel_id:
