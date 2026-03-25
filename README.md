@@ -108,21 +108,6 @@ python3 -m venv .venv
 5. **Interactivity** → Enable (for OPTIONS buttons)
 6. Install app to workspace, invite bot to channels
 
-### Enable TUI → Slack Sync
-
-Add hooks to `~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "/path/to/claude-slack-bridge/bin/claude-slack-bridge-hook user-prompt"}]}],
-    "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "/path/to/claude-slack-bridge/bin/claude-slack-bridge-hook stop"}]}]
-  }
-}
-```
-
-The `--print` subprocess sets `CLAUDE_SLACK_BRIDGE_PRINT=1` so hooks auto-skip, preventing loops.
-
 ## Usage
 
 ### Plugin Commands
