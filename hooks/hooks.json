@@ -1,0 +1,27 @@
+{
+  "description": "Slack Bridge — sync Claude Code sessions to Slack threads",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/claude-slack-bridge-hook UserPromptSubmit",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/claude-slack-bridge-hook Stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
