@@ -1,0 +1,11 @@
+{
+  "daemon_port": 7778,
+  "work_dir": "/path/to/your/projects",
+  "claude_args": ["--tools", "Bash,Read,Write,Edit,Glob,Grep"],
+  "require_approval": false,
+  "auto_approve_tools": ["Read", "Glob", "Grep"],
+  "approval_timeout_secs": 300,
+  "max_concurrent_sessions": 3,
+  "session_archive_after_secs": 3600,
+  "log_level": "INFO"
+}
