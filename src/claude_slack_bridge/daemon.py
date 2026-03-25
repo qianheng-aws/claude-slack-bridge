@@ -563,6 +563,61 @@ class Daemon:
                 for s in active
             ])
 
+        @routes.post("/sessions/bind")
+        async def bind_session(req: web.Request) -> web.Response:
+            """Bind a TUI session to a new Slack DM thread."""
+            payload = await req.json()
+            session_id = payload.get("session_id", "")
+            session_name = payload.get("name", session_id[:12])
+            cwd = payload.get("cwd", self._config.work_dir)
+
+            if not self._slack or not self._bot_user_id:
+                return web.json_response({"error": "slack not connected"}, status=503)
+
+            # Find or open DM with bot owner
+            owner_id = payload.get("owner_id", "")
+            if not owner_id:
+                # Use first DM channel we know about
+                resp = await self._slack._web.conversations_list(types="im", limit=1)
+                ims = resp.get("channels", [])
+                if ims:
+                    dm_channel = ims[0]["id"]
+                else:
+                    return web.json_response({"error": "no DM channel found"}, status=404)
+            else:
+                resp = await self._slack._web.conversations_open(users=owner_id)
+                dm_channel = resp["channel"]["id"]
+
+            # Post session header as thread root
+            blocks = build_session_header_blocks(session_id=session_id, directory=cwd)
+            thread_ts = await self._slack.post_blocks(
+                dm_channel, blocks, f"Session: {session_name}"
+            )
+
+            # Register session
+            session = self._session_mgr.get(session_id)
+            if not session:
+                session = self._session_mgr.create(
+                    session_id=session_id,
+                    session_name=session_name,
+                    channel_id=dm_channel,
+                    thread_ts=thread_ts,
+                    mode=SessionMode.IDLE,
+                )
+            else:
+                session.channel_id = dm_channel
+                session.thread_ts = thread_ts
+                self._session_mgr._thread_index[(dm_channel, thread_ts)] = session.session_id
+                self._session_mgr._save()
+            session._cwd = cwd
+
+            return web.json_response({
+                "ok": True,
+                "channel_id": dm_channel,
+                "thread_ts": thread_ts,
+                "session_id": session_id,
+            })
+
         @routes.post("/hooks/{hook_type}")
         async def hook_handler(req: web.Request) -> web.Response:
             hook_type = req.match_info["hook_type"]
