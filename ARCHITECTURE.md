@@ -191,7 +191,6 @@ TUI 启动，加载 session 历史
     │
     ├─► TUI 中用户操作 → hooks 同步到 Slack thread:
     │     user_prompt  → Slack 显示用户输入
-    │     pre_tool_use → Slack 显示工具调用（可选审批）
     │     stop         → Slack 显示 Claude 回复
     │
     └─► TUI 退出 → stop hook 触发

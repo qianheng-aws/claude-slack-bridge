@@ -7,6 +7,8 @@
 
 Bridge Claude Code sessions to Slack — chat with Claude from your phone via Slack threads.
 
+English | [中文](README.zh.md)
+
 <p align="center">
   <img src="docs/demo.gif" alt="Claude Slack Bridge Demo" width="600">
 </p>
@@ -164,7 +166,7 @@ make logs      # tail daemon log
 
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full dual-mode state machine design.
+See [ARCHITECTURE.en.md](ARCHITECTURE.en.md) | [ARCHITECTURE.md (中文)](ARCHITECTURE.md) for the full dual-mode state machine design.
 
 ## Tests
 
