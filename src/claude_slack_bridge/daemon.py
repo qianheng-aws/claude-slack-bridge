@@ -237,26 +237,29 @@ class Daemon:
     async def _on_socket_event(self, client: SocketModeClient, req: SocketModeRequest) -> None:
         await client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
 
-        if req.type == "interactive":
-            payload = req.payload or {}
-            for action in payload.get("actions", []):
-                await self._handle_interactive(action, payload)
+        try:
+            if req.type == "interactive":
+                payload = req.payload or {}
+                for action in payload.get("actions", []):
+                    await self._handle_interactive(action, payload)
 
-        elif req.type == "events_api":
-            event = (req.payload or {}).get("event", {})
-            etype = event.get("type", "")
+            elif req.type == "events_api":
+                event = (req.payload or {}).get("event", {})
+                etype = event.get("type", "")
 
-            if etype == "app_mention":
-                await self._handle_mention(event)
-            elif etype == "message" and "subtype" not in event and "bot_id" not in event:
-                if event.get("user") == self._bot_user_id:
-                    return
-                channel = event.get("channel", "")
-                thread_ts = event.get("thread_ts")
-                if thread_ts:
-                    await self._handle_thread_reply(event, thread_ts)
-                elif channel.startswith("D"):
-                    await self._handle_dm(event)
+                if etype == "app_mention":
+                    await self._handle_mention(event)
+                elif etype == "message" and "subtype" not in event and "bot_id" not in event:
+                    if event.get("user") == self._bot_user_id:
+                        return
+                    channel = event.get("channel", "")
+                    thread_ts = event.get("thread_ts")
+                    if thread_ts:
+                        await self._handle_thread_reply(event, thread_ts)
+                    elif channel.startswith("D"):
+                        await self._handle_dm(event)
+        except Exception:
+            logger.error("Error handling socket event", exc_info=True)
 
     async def _handle_mention(self, event: dict) -> None:
         channel_id = event.get("channel", "")
