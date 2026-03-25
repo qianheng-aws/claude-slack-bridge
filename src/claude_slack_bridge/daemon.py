@@ -433,14 +433,19 @@ class Daemon:
             else:
                 await self._resume_process(session, text)
         elif self._is_tui_active(session):
-            # TUI is running — queue message for later
+            # TUI is running — queue message, offer takeover
             self._queued.setdefault(session.session_id, []).append(text)
             n = len(self._queued[session.session_id])
-            await self._slack.post_text(
-                channel_id,
-                f"📝 已记录 ({n} 条待发送)，TUI 退出后自动发送给 Claude",
-                thread_ts,
-            )
+            blocks = [
+                {"type": "section", "text": {"type": "mrkdwn",
+                    "text": f"📝 已记录 ({n} 条待发送)，TUI 退出后自动发送"}},
+                {"type": "actions", "elements": [
+                    {"type": "button", "text": {"type": "plain_text", "text": "⚡ 立即接管"},
+                     "action_id": "takeover_session", "value": session.session_id,
+                     "style": "danger"},
+                ]},
+            ]
+            await self._slack.post_blocks(channel_id, blocks, f"📝 排队 ({n})", thread_ts)
         elif session.mode == SessionMode.IDLE.value:
             await self._resume_process(session, text)
 
@@ -532,6 +537,21 @@ class Daemon:
                     await self._slack.update_blocks(channel_id, msg_ts, blocks)
                 except Exception:
                     pass
+
+        elif action_id == "takeover_session":
+            # Kill TUI process and drain queue via --resume --print
+            session = self._session_mgr.get(value)
+            if session:
+                session._tui_active = 0  # Clear TUI active flag
+                await self._drain_queue(session)
+                if self._slack and msg_ts:
+                    try:
+                        await self._slack._web.chat_update(
+                            channel=channel_id, ts=msg_ts,
+                            text="⚡ Slack 已接管 session"
+                        )
+                    except Exception:
+                        pass
 
     # ── HTTP API ──
 
