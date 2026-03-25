@@ -78,7 +78,7 @@ class Daemon:
         now = time.time()
         if sid not in self._progress:
             msg_ts = await self._slack.post_text(
-                session.channel_id, f"⏳ {line}", session.thread_ts
+                session.channel_id, f"🤔 _thinking..._\n{line}", session.thread_ts
             )
             self._progress[sid] = {"msg_ts": msg_ts, "last_update": now, "lines": [line]}
         else:
@@ -97,34 +97,40 @@ class Daemon:
                     pass
 
     async def _finalize_progress(self, session: Session, final_text: str) -> None:
-        """Replace progress message with final result, or post new if no progress."""
+        """Replace progress message with final result using plain text (no 'See more')."""
         sid = session.session_id
         from claude_slack_bridge.slack_formatter import md_to_mrkdwn
         cleaned, choices = extract_options(final_text)
-        display = md_to_mrkdwn(cleaned[:_SLACK_MAX_TEXT])
-        blocks = build_response_blocks(cleaned)
+        display = md_to_mrkdwn(cleaned)
 
         if sid in self._progress:
             state = self._progress.pop(sid)
-            try:
-                await self._slack.update_blocks(
-                    session.channel_id, state["msg_ts"], blocks, "Claude Response"
-                )
-            except Exception:
-                await self._slack.post_blocks(
-                    session.channel_id, blocks, "Claude Response", session.thread_ts
+            msg_ts = state.get("msg_ts")
+            if msg_ts:
+                try:
+                    # Use text field, not blocks — avoids "See more" truncation
+                    chunks = _split_text(display, _SLACK_MAX_TEXT)
+                    await self._slack._web.chat_update(
+                        channel=session.channel_id, ts=msg_ts, text=chunks[0]
+                    )
+                    # Post remaining chunks as new messages
+                    for chunk in chunks[1:]:
+                        await self._slack.post_text(
+                            session.channel_id, chunk, session.thread_ts
+                        )
+                except Exception:
+                    await self._slack.post_text(
+                        session.channel_id, display[:_SLACK_MAX_TEXT], session.thread_ts
+                    )
+            else:
+                await self._slack.post_text(
+                    session.channel_id, display[:_SLACK_MAX_TEXT], session.thread_ts
                 )
         else:
-            await self._slack.post_blocks(
-                session.channel_id, blocks, "Claude Response", session.thread_ts
-            )
-
-        # Post remaining chunks if text was too long
-        if len(cleaned) > _SLACK_MAX_TEXT:
-            for chunk in _split_text(cleaned[_SLACK_MAX_TEXT:], _SLACK_MAX_TEXT):
-                blocks = build_response_blocks(chunk)
-                await self._slack.post_blocks(
-                    session.channel_id, blocks, "Claude Response (cont.)", session.thread_ts
+            chunks = _split_text(display, _SLACK_MAX_TEXT)
+            for chunk in chunks:
+                await self._slack.post_text(
+                    session.channel_id, chunk, session.thread_ts
                 )
 
         if choices:
@@ -141,23 +147,20 @@ class Daemon:
             return
 
         if evt.raw_type == "assistant" and evt.text:
-            # Accumulate text — will be finalized on result
             sid = session.session_id
             if sid not in self._progress:
-                self._progress[sid] = {"msg_ts": None, "last_update": 0, "lines": []}
-            state = self._progress[sid]
-            state["_full_text"] = evt.text  # Always keep latest full text
-
-            # Show streaming preview
-            now = time.time()
-            preview = evt.text[-200:] if len(evt.text) > 200 else evt.text
-            if state["msg_ts"] is None:
+                # First token — post "thinking..." placeholder
                 msg_ts = await self._slack.post_text(
-                    session.channel_id, f"💬 {preview}", session.thread_ts
+                    session.channel_id, "🤔 _thinking..._", session.thread_ts
                 )
-                state["msg_ts"] = msg_ts
-                state["last_update"] = now
-            elif now - state["last_update"] >= 1.0:
+                self._progress[sid] = {"msg_ts": msg_ts, "last_update": 0, "lines": []}
+            state = self._progress[sid]
+            state["_full_text"] = evt.text
+
+            # Update with streaming preview
+            now = time.time()
+            if now - state["last_update"] >= 1.0:
+                preview = evt.text[-300:] if len(evt.text) > 300 else evt.text
                 try:
                     await self._slack._web.chat_update(
                         channel=session.channel_id, ts=state["msg_ts"],
