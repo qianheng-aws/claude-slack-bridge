@@ -39,6 +39,25 @@ TUI 和 Slack 可以同时操作同一个会话 —— Slack 使用 `--resume --
 - **选项按钮** — Slack 中可点击的建议按钮
 - **Markdown → mrkdwn** — 正确的格式转换，长消息自动分割
 
+## 与其他方案的区别
+
+### vs Claude Slack App（官方）
+
+官方 Claude Slack 应用是一个独立聊天机器人，调用 Claude API 进行对话。本项目将你的**本地 Claude Code 会话**桥接到 Slack —— 拥有完整的文件系统、工具和代码库访问权限。
+
+### vs Remote Control（官方）
+
+[Remote Control](https://code.claude.com/docs/en/remote-control) 将 claude.ai/code 或 Claude 手机 App 连接到本地会话。概念相似，但有关键区别：
+
+| | Remote Control | Claude Slack Bridge |
+|---|---|---|
+| **客户端** | claude.ai/code 或 Claude App（完整 UI） | Slack（消息界面） |
+| **认证** | 需要 claude.ai Pro/Max/Team/Enterprise，不支持 API key 或 Bedrock | 支持任何 Claude Code 配置，包括 Bedrock/API key |
+| **团队可见性** | 私人会话 | Slack 频道共享，团队可以跟进 |
+| **集成** | 独立界面 | 融入现有 Slack 工作流（搜索、通知、@提及） |
+
+如果你有 claude.ai 订阅，Remote Control 提供更丰富的 UI。本项目更适合 **Bedrock/API key 用户**、**团队协作场景**，或者你希望将 Claude Code 融入 Slack 工作流。
+
 ## 安装
 
 ### 作为 Claude Code 插件安装（推荐）

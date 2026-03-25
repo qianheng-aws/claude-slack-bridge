@@ -39,6 +39,25 @@ TUI and Slack can operate on the same session simultaneously — Slack uses `--r
 - **OPTIONS buttons** — clickable suggestion buttons in Slack
 - **Markdown → mrkdwn** — proper formatting, long messages auto-split
 
+## How is this different?
+
+### vs Claude Slack App (official)
+
+The official Claude Slack app is a standalone chatbot that calls the Claude API. This project bridges your **local Claude Code session** to Slack — with full access to your filesystem, tools, and codebase.
+
+### vs Remote Control (official)
+
+[Remote Control](https://code.claude.com/docs/en/remote-control) connects claude.ai/code or the Claude mobile app to a local session. It's similar in concept but differs in key ways:
+
+| | Remote Control | Claude Slack Bridge |
+|---|---|---|
+| **Client** | claude.ai/code or Claude app (full UI) | Slack (message-based) |
+| **Auth** | Requires claude.ai Pro/Max/Team/Enterprise — no API key or Bedrock | Works with any Claude Code setup including Bedrock/API keys |
+| **Team visibility** | Private session | Shared in Slack channels — team can follow along |
+| **Integration** | Standalone interface | Fits into existing Slack workflows (search, notifications, @mentions) |
+
+If you have a claude.ai subscription, Remote Control gives a richer UI. This project is better for **Bedrock/API key users**, **team visibility**, or when you want Claude Code woven into your Slack workflow.
+
 ## Install
 
 ### As Claude Code Plugin (recommended)
