@@ -433,19 +433,8 @@ class Daemon:
             else:
                 await self._resume_process(session, text)
         elif self._is_tui_active(session):
-            # TUI is running — queue message, offer takeover
-            self._queued.setdefault(session.session_id, []).append(text)
-            n = len(self._queued[session.session_id])
-            blocks = [
-                {"type": "section", "text": {"type": "mrkdwn",
-                    "text": f"📝 已记录 ({n} 条待发送)，TUI 退出后自动发送"}},
-                {"type": "actions", "elements": [
-                    {"type": "button", "text": {"type": "plain_text", "text": "⚡ 立即接管"},
-                     "action_id": "takeover_session", "value": session.session_id,
-                     "style": "danger"},
-                ]},
-            ]
-            await self._slack.post_blocks(channel_id, blocks, f"📝 排队 ({n})", thread_ts)
+            # TUI is running — start --print alongside, won't sync to TUI
+            await self._resume_process(session, text)
         elif session.mode == SessionMode.IDLE.value:
             await self._resume_process(session, text)
 
