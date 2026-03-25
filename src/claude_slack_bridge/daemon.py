@@ -67,6 +67,8 @@ class Daemon:
         self._trusted_sessions: set[str] = set()
         self._yolo_mode: bool = False
         self._cleanup_task: asyncio.Task | None = None
+        # Queued messages: session_id -> [text, ...]
+        self._queued: dict[str, list[str]] = {}
 
     # ── Progress message (single message, overwritten by final result) ──
 
@@ -430,23 +432,17 @@ class Daemon:
                 await cp.send_message(text)
             else:
                 await self._resume_process(session, text)
-        elif session.mode == SessionMode.HOOK.value:
+        elif self._is_tui_active(session):
+            # TUI is running — queue message for later
+            self._queued.setdefault(session.session_id, []).append(text)
+            n = len(self._queued[session.session_id])
             await self._slack.post_text(
                 channel_id,
-                "⚠️ Session 正在 TUI 中使用，请在终端操作，或退出 TUI 后从 Slack 继续",
+                f"📝 已记录 ({n} 条待发送)，TUI 退出后自动发送给 Claude",
                 thread_ts,
             )
         elif session.mode == SessionMode.IDLE.value:
-            # Check if TUI was recently active (within 60s)
-            tui_ts = getattr(session, "_tui_active", 0)
-            if time.time() - tui_ts < 60:
-                await self._slack.post_text(
-                    channel_id,
-                    "⚠️ TUI 刚刚还在使用，请在终端操作，或等一会儿再从 Slack 发消息",
-                    thread_ts,
-                )
-            else:
-                await self._resume_process(session, text)
+            await self._resume_process(session, text)
 
     async def _resume_process(self, session: Session, text: str | None) -> None:
         self._session_mgr.set_mode(session.session_id, SessionMode.PROCESS)
@@ -461,6 +457,34 @@ class Daemon:
             on_event=self._on_stream_event,
             on_exit=self._on_process_exit,
         )
+
+    def _is_tui_active(self, session: Session) -> bool:
+        """Check if TUI was recently active (hook received within 30s)."""
+        tui_ts = getattr(session, "_tui_active", 0)
+        return time.time() - tui_ts < 30
+
+    async def _drain_queue(self, session: Session) -> None:
+        """Send queued Slack messages to Claude after TUI exits."""
+        msgs = self._queued.pop(session.session_id, [])
+        if not msgs and not self._slack:
+            return
+        if msgs:
+            await self._slack.post_text(
+                session.channel_id,
+                f"🚀 TUI 已退出，发送 {len(msgs)} 条排队消息...",
+                session.thread_ts,
+            )
+            # Start --print and send messages
+            await self._resume_process(session, msgs[0])
+            # Wait for process to be ready, then send remaining
+            if len(msgs) > 1:
+                await asyncio.sleep(2)
+                cp = self._pool.get(session.session_id)
+                if cp:
+                    for msg in msgs[1:]:
+                        # Wait for previous response before sending next
+                        await asyncio.sleep(1)
+                        await cp.send_message(msg)
 
     async def _handle_interactive(self, action: dict, payload: dict) -> None:
         action_id = action.get("action_id", "")
@@ -555,6 +579,8 @@ class Daemon:
                 response_text = payload.get("response", "")
                 if response_text:
                     await self._finalize_progress(session, response_text)
+                # TUI exited — drain queued Slack messages
+                await self._drain_queue(session)
             elif hook_type == "pre-tool-use":
                 return web.Response(text="approved")
 
