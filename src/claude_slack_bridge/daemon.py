@@ -255,7 +255,12 @@ class Daemon:
                     channel = event.get("channel", "")
                     thread_ts = event.get("thread_ts")
                     if thread_ts:
-                        await self._handle_thread_reply(event, thread_ts)
+                        session = self._session_mgr.find_by_thread(channel, thread_ts)
+                        if session:
+                            await self._handle_thread_reply(event, thread_ts)
+                        elif channel.startswith("D"):
+                            # Chat mode DM — has thread_ts but no session yet
+                            await self._handle_dm(event, thread_ts)
                     elif channel.startswith("D"):
                         await self._handle_dm(event)
         except Exception:
@@ -293,10 +298,12 @@ class Daemon:
 
         await self._start_new_session(channel_id, thread_ts, prompt)
 
-    async def _handle_dm(self, event: dict) -> None:
+    async def _handle_dm(self, event: dict, thread_ts: str | None = None) -> None:
         channel_id = event.get("channel", "")
         text = event.get("text", "")
         msg_ts = event.get("ts", "")
+        # Chat mode provides thread_ts; traditional DM uses msg_ts as thread root
+        effective_ts = thread_ts or msg_ts
 
         await self._slack.add_reaction(channel_id, msg_ts, "eyes")
 
@@ -307,7 +314,7 @@ class Daemon:
 
         parts = text.split()
         if len(parts) >= 2 and parts[0].lower() == "resume":
-            await self._handle_resume_cmd(parts, channel_id, msg_ts)
+            await self._handle_resume_cmd(parts, channel_id, effective_ts)
             return
 
         active_count = len([s for s in self._session_mgr.list_active()
@@ -316,11 +323,11 @@ class Daemon:
             await self._slack.post_text(
                 channel_id,
                 f"⚠️ Max concurrent sessions ({self._config.max_concurrent_sessions}) reached.",
-                msg_ts,
+                effective_ts,
             )
             return
 
-        await self._start_new_session(channel_id, msg_ts, text)
+        await self._start_new_session(channel_id, effective_ts, text)
 
     async def _handle_resume_cmd(self, parts: list[str], channel_id: str, thread_ts: str) -> None:
         """Handle 'resume <session-id> [follow-up]' command."""
