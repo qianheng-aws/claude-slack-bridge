@@ -7,6 +7,10 @@
 
 Bridge Claude Code sessions to Slack — chat with Claude from your phone via Slack threads.
 
+<p align="center">
+  <img src="docs/demo.gif" alt="Claude Slack Bridge Demo" width="600">
+</p>
+
 ## How it works
 
 A daemon runs in the background, connecting Claude Code to Slack via Socket Mode:
