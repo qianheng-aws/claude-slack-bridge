@@ -71,30 +71,18 @@ class ProcessPool:
         extra_args: list[str] | None = None,
         on_event: OnEvent | None = None,
         on_exit: OnExit | None = None,
-        plugin_context: str = "",
     ) -> ClaudeProcess:
-        """Start a claude --print process for a session.
-
-        Args:
-            plugin_context: Extra context (e.g. CLAUDE.md) appended to the system prompt.
-        """
+        """Start a claude --print process for a session."""
         # Kill existing process for this session
         if session_id in self._processes:
             logger.info("Killing existing process for session %s", session_id)
             await self._processes[session_id].terminate()
 
         system_prompt = (
-            f"You are a Claude Code agent connected to Slack via Claude Slack Bridge. "
-            f"Your session ID is: {session_id}. "
-            f"Users interact with you through Slack threads. Be concise — Slack messages "
-            f"should be short and readable. When presenting choices, end with "
-            f"[OPTIONS: choice1 | choice2 | choice3] format (max 5). "
-            f"Use Chinese if the user writes in Chinese. "
-            f"For GitHub operations, always use the gh CLI (already authenticated), "
-            f"never the built-in /login."
+            f"Session {session_id}. Slack thread — be concise. "
+            f"End choices with [OPTIONS: a | b | c]. "
+            f"Use Chinese if user writes Chinese. Use gh CLI for GitHub."
         )
-        if plugin_context:
-            system_prompt += f"\n\n{plugin_context}"
 
         cmd = [
             "claude", "--print",
@@ -125,6 +113,7 @@ class ProcessPool:
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
             env=env,
+            limit=10 * 1024 * 1024,  # 10MB — stream-json lines can be huge on resume
         )
 
         cp = ClaudeProcess(session_id=session_id, process=proc)
