@@ -69,6 +69,34 @@ class Daemon:
         self._cleanup_task: asyncio.Task | None = None
         # Queued messages: session_id -> [text, ...]
         self._queued: dict[str, list[str]] = {}
+        # Plugin context (CLAUDE.md) injected into --print system prompts
+        self._plugin_context = self._load_plugin_context()
+
+    @staticmethod
+    def _load_plugin_context() -> str:
+        """Load CLAUDE.md from plugin/project directory for context injection.
+
+        Searches standard locations so --print processes get the plugin's
+        architectural context automatically (Issue #1).
+        """
+        candidates = [
+            # Installed as editable package: src/claude_slack_bridge -> src -> project root
+            Path(__file__).resolve().parent.parent.parent / "CLAUDE.md",
+            # Plugin directory (when installed as Claude Code plugin)
+            Path.home() / ".claude" / "plugins" / "slack-bridge" / "CLAUDE.md",
+            # Package data (shipped alongside source)
+            Path(__file__).resolve().parent / "CLAUDE.md",
+        ]
+        for p in candidates:
+            if p.is_file():
+                try:
+                    content = p.read_text(encoding="utf-8")
+                    logger.info("Loaded plugin context from %s (%d chars)", p, len(content))
+                    return content
+                except OSError:
+                    continue
+        logger.debug("No CLAUDE.md found for plugin context injection")
+        return ""
 
     # ── Progress message (single message, overwritten by final result) ──
 
@@ -146,6 +174,7 @@ class Daemon:
         session = self._session_mgr.get(session_id)
         if not session or not self._slack:
             return
+        session.last_active = time.time()  # keep-alive, no disk write
 
         if evt.raw_type == "assistant" and evt.text:
             sid = session.session_id
@@ -411,6 +440,7 @@ class Daemon:
             extra_args=self._config.claude_args,
             on_event=self._on_stream_event,
             on_exit=self._on_process_exit,
+            plugin_context=self._plugin_context,
         )
 
     async def _handle_thread_reply(self, event: dict, thread_ts: str) -> None:
@@ -455,7 +485,47 @@ class Daemon:
             extra_args=self._config.claude_args,
             on_event=self._on_stream_event,
             on_exit=self._on_process_exit,
+            plugin_context=self._plugin_context,
         )
+
+    async def _auto_bind_session(self, session_key: str, cwd: str) -> Session | None:
+        """Auto-bind a TUI session to a Slack DM thread for the approval flow.
+
+        When a PreToolUse hook arrives from a TUI session that has no Slack
+        binding yet, this creates a DM thread so approval buttons can be
+        posted there (Issue #2).
+        """
+        if not self._slack:
+            return None
+        try:
+            resp = await self._slack._web.conversations_list(types="im", limit=1)
+            ims = resp.get("channels", [])
+            if not ims:
+                logger.warning("No DM channel found for auto-bind")
+                return None
+            dm_channel = ims[0]["id"]
+
+            name = f"TUI-{session_key[:12]}"
+            blocks = build_session_header_blocks(
+                session_id=session_key, directory=cwd or self._config.work_dir
+            )
+            thread_ts = await self._slack.post_blocks(
+                dm_channel, blocks, f"Session: {name}"
+            )
+
+            session = self._session_mgr.create(
+                session_id=session_key,
+                session_name=name,
+                channel_id=dm_channel,
+                thread_ts=thread_ts,
+                mode=SessionMode.HOOK,
+            )
+            session._cwd = cwd
+            logger.info("Auto-bound TUI session %s to DM %s", session_key, dm_channel)
+            return session
+        except Exception:
+            logger.error("Failed to auto-bind session %s", session_key, exc_info=True)
+            return None
 
     def _is_tui_active(self, session: Session) -> bool:
         """Check if TUI was recently active (hook received within 30s)."""
