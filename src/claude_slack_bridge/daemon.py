@@ -225,16 +225,17 @@ class Daemon:
             await asyncio.sleep(60)
             try:
                 now = time.time()
-                timeout = self._config.session_archive_after_secs
+                archive_timeout = self._config.session_archive_after_secs
+                process_timeout = self._config.process_idle_timeout_secs
                 for session in self._session_mgr.list_active():
                     age = now - session.last_active
-                    if session.mode == SessionMode.IDLE.value and age > timeout:
-                        self._session_mgr.set_mode(session.session_id, SessionMode.IDLE)
-                        logger.debug("Cleaned up stale session %s", session.session_id)
-                    elif session.mode == SessionMode.PROCESS.value and age > timeout:
+                    if session.mode == SessionMode.IDLE.value and age > archive_timeout:
+                        self._session_mgr.archive(session.session_id)
+                        logger.info("Archived stale idle session %s", session.session_id)
+                    elif session.mode == SessionMode.PROCESS.value and age > process_timeout:
                         await self._pool.terminate(session.session_id)
                         self._session_mgr.set_mode(session.session_id, SessionMode.IDLE)
-                        logger.info("Terminated stale process session %s", session.session_id)
+                        logger.info("Terminated idle process session %s (no activity for %ds)", session.session_id, int(age))
             except Exception:
                 logger.debug("Cleanup error", exc_info=True)
 

@@ -39,7 +39,8 @@ def load_approval_timeout():
 
 def derive_session_key(hook_json):
     """Derive session key from hook stdin JSON."""
-    if sid := hook_json.get("session_id"):
+    sid = hook_json.get("session_id")
+    if sid:
         return str(sid)
     cwd = hook_json.get("cwd", "unknown")
     env_key = os.environ.get("CLAUDE_CODE_SESSION_KEY", "")
@@ -122,6 +123,14 @@ def main():
         sys.exit(0)
 
     port = load_port()
+
+    # Quick check: if daemon isn't running, exit silently
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        if s.connect_ex(("127.0.0.1", port)) != 0:
+            sys.exit(0)
+
     payload = build_payload(event_type, stdin_json)
     endpoint = f"/hooks/{event_type}"
 

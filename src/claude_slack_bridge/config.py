@@ -22,6 +22,7 @@ class BridgeConfig:
     session_archive_after_secs: int = 86400
     log_level: str = "INFO"
     max_concurrent_sessions: int = 3
+    process_idle_timeout_secs: int = 600  # kill idle --print process after 10min
     stream_throttle_ms: int = 1000
     hook_heartbeat_timeout_secs: int = 300
     claude_args: list[str] = field(default_factory=list)
@@ -89,6 +90,7 @@ def load_config(config_dir: Path | None = None) -> BridgeConfig:
         session_archive_after_secs=file_data.get("session_archive_after_secs", 86400),
         log_level=file_data.get("log_level", "INFO"),
         max_concurrent_sessions=file_data.get("max_concurrent_sessions", 3),
+        process_idle_timeout_secs=file_data.get("process_idle_timeout_secs", 600),
         stream_throttle_ms=file_data.get("stream_throttle_ms", 1000),
         hook_heartbeat_timeout_secs=file_data.get("hook_heartbeat_timeout_secs", 300),
         claude_args=file_data.get("claude_args", []),
