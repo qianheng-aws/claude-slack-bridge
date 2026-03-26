@@ -70,12 +70,30 @@ class ProcessPool:
         extra_args: list[str] | None = None,
         on_event: OnEvent | None = None,
         on_exit: OnExit | None = None,
+        plugin_context: str = "",
     ) -> ClaudeProcess:
-        """Start a claude --print process for a session."""
+        """Start a claude --print process for a session.
+
+        Args:
+            plugin_context: Extra context (e.g. CLAUDE.md) appended to the system prompt.
+        """
         # Kill existing process for this session
         if session_id in self._processes:
             logger.info("Killing existing process for session %s", session_id)
             await self._processes[session_id].terminate()
+
+        system_prompt = (
+            f"You are a Claude Code agent connected to Slack via Claude Slack Bridge. "
+            f"Your session ID is: {session_id}. "
+            f"Users interact with you through Slack threads. Be concise — Slack messages "
+            f"should be short and readable. When presenting choices, end with "
+            f"[OPTIONS: choice1 | choice2 | choice3] format (max 5). "
+            f"Use Chinese if the user writes in Chinese. "
+            f"For GitHub operations, always use the gh CLI (already authenticated), "
+            f"never the built-in /login."
+        )
+        if plugin_context:
+            system_prompt += f"\n\n{plugin_context}"
 
         cmd = [
             "claude", "--print",
@@ -83,7 +101,7 @@ class ProcessPool:
             "--input-format", "stream-json",
             "--verbose",
             "--setting-sources", "user,project,local",
-            "--system-prompt", f"You are a Claude Code agent connected to Slack via Claude Slack Bridge. Your session ID is: {session_id}. Users interact with you through Slack threads. Be concise — Slack messages should be short and readable. When presenting choices, end with [OPTIONS: choice1 | choice2 | choice3] format (max 5). Use Chinese if the user writes in Chinese. For GitHub operations, always use the gh CLI (already authenticated), never the built-in /login.",
+            "--system-prompt", system_prompt,
         ]
         if resume:
             cmd += ["--resume", session_id]
@@ -140,10 +158,8 @@ class ProcessPool:
                     break
                 evt = parse_line(line.decode("utf-8", errors="replace"))
                 if evt and on_event:
-                    try:
-                        await on_event(cp.session_id, evt)
-                    except Exception:
-                        logger.exception("Error in on_event callback")
+                    # Fire-and-forget: don't block stdout reading on Slack API
+                    asyncio.create_task(self._safe_on_event(on_event, cp.session_id, evt))
         except asyncio.CancelledError:
             return
         finally:
@@ -161,6 +177,13 @@ class ProcessPool:
         if cp and cp.alive:
             return cp
         return None
+
+    @staticmethod
+    async def _safe_on_event(on_event: OnEvent, session_id: str, evt: StreamEvent) -> None:
+        try:
+            await on_event(session_id, evt)
+        except Exception:
+            logger.exception("Error in on_event callback")
 
     async def terminate(self, session_id: str) -> None:
         if cp := self._processes.get(session_id):
