@@ -57,12 +57,13 @@ The `http_api.py` module is the original hook-only API that predates the dual-mo
 
 ### Hook pipeline (hooks.py)
 
-Hooks are synchronous CLI commands invoked by Claude Code. They use **stdlib urllib only** (no aiohttp) to POST to the daemon. Three hooks are registered:
-- **PreToolUse** — blocks waiting for Slack approval (Approve/Reject/Trust/YOLO buttons). Auto-approves safe tools (Read, Glob, Grep) and trusted/YOLO sessions. Unbound TUI sessions are auto-bound to a Slack DM thread on first approval request.
+Hooks are synchronous CLI commands invoked by Claude Code. They use **stdlib urllib only** (no aiohttp) to POST to the daemon. Two hooks are registered:
 - **UserPromptSubmit** — fire-and-forget, syncs user prompts to Slack.
 - **Stop** — fire-and-forget, syncs final responses to Slack.
 
 If the daemon is unreachable, hooks return 0 to never block Claude Code.
+
+> **Note:** PreToolUse (Slack-based tool approval) is currently disabled due to a dual-approval conflict with Claude Code's built-in permission system — see [Issue #4](https://github.com/qianheng-aws/claude-slack-bridge/issues/4). The approval code is preserved in `daemon.py` and `approval.py` for future use.
 
 ### Slack formatting (slack_formatter.py)
 
@@ -84,4 +85,10 @@ The daemon automatically reads this `CLAUDE.md` file and injects it into the `--
 
 ## Plugin structure
 
-The repo doubles as a Claude Code marketplace plugin. The `/slack-bridge` command (and status/stop/logs variants) are defined as markdown files in `commands/` and `plugins/slack-bridge/commands/`. These contain shell scripts that the TUI executes directly.
+The repo doubles as a Claude Code marketplace plugin. Slash commands are namespaced under `slack-bridge:` and defined as markdown files in `plugins/slack-bridge/commands/`:
+- `/slack-bridge:sync-on` — start daemon + bind session to Slack DM
+- `/slack-bridge:start-daemon` — start daemon only
+- `/slack-bridge:stop-daemon` — stop daemon
+- `/slack-bridge:status` — show status and active sessions
+- `/slack-bridge:logs` — view recent daemon logs
+- `/slack-bridge:sync-off` — mute TUI→Slack sync for current session

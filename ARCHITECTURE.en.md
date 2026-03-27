@@ -136,7 +136,7 @@ claude stdout (stream-json):
 Daemon StreamReader (throttled 1s)
     +-> chat_postMessage (first time)
     +-> chat_update (incremental updates)
-    +-> chat_postMessage (tool_use -> approval buttons)
+    +-> chat_postMessage (tool_use -> approval buttons, PROCESS mode only)
 ```
 
 ### 3. Slack Reply -> Routing Decision
@@ -167,12 +167,16 @@ Daemon Socket Mode: events_api -> message
 claude stdout: {"type":"tool_use","name":"Bash","input":{"command":"rm -rf old/"}}
     |
     v
-Daemon: check auto_approve_tools
+Daemon: check auto_approve_tools (PROCESS mode only)
     +- whitelisted -> write approved to stdin
     +- not whitelisted -> Slack approval buttons
                     |
                     User clicks Approve -> write approved to stdin
                     User clicks Reject  -> write rejected to stdin
+
+Note: The PreToolUse hook (TUI -> Slack approval) is currently disabled due to
+dual-approval conflict with CC's permission system. See Issue #4.
+Approval in PROCESS mode (Slack-driven sessions) still works as described above.
 ```
 
 ### 5. TUI Resume (PROCESS/IDLE -> HOOK mode)

@@ -136,7 +136,7 @@ claude stdout (stream-json):
 Daemon StreamReader (节流 1s)
     ├─► chat_postMessage (首次)
     ├─► chat_update (增量更新)
-    └─► chat_postMessage (tool_use → 审批按钮)
+    └─► chat_postMessage (tool_use → 审批按钮，仅 PROCESS 模式)
 ```
 
 ### 3. Slack 回复 → 路由决策
@@ -167,12 +167,16 @@ Daemon Socket Mode: events_api → message
 claude stdout: {"type":"tool_use","name":"Bash","input":{"command":"rm -rf old/"}}
     │
     ▼
-Daemon: 检查 auto_approve_tools
+Daemon: 检查 auto_approve_tools（仅 PROCESS 模式）
     ├─ 白名单 → stdin 写 approved
     └─ 非白名单 → Slack 审批按钮
                     │
                     用户点 ✅ → stdin 写 approved
                     用户点 ❌ → stdin 写 rejected
+
+注意：PreToolUse hook（TUI → Slack 审批）目前已禁用，因为与 CC 自身权限系统存在
+双重审批冲突。详见 Issue #4。
+PROCESS 模式下（Slack 驱动的会话）的审批流程仍按上述方式运行。
 ```
 
 ### 5. TUI Resume（PROCESS/IDLE → HOOK 模式）

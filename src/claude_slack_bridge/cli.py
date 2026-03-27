@@ -75,18 +75,7 @@ def _register_hooks(config_dir: Path) -> None:
     if settings_path.is_file():
         settings = json.loads(settings_path.read_text())
 
-    cfg = load_config(config_dir)
-    timeout_ms = (cfg.approval_timeout_secs + 10) * 1000
-
     hooks_config = {
-        "PreToolUse": [{
-            "matcher": "",
-            "hooks": [{
-                "type": "command",
-                "command": "claude-slack-bridge hook pre-tool-use",
-                "timeout_ms": timeout_ms,
-            }],
-        }],
         "PostToolUse": [{
             "matcher": "",
             "hooks": [{

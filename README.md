@@ -34,7 +34,7 @@ TUI and Slack can operate on the same session simultaneously — Slack uses `--r
 
 - **@mention or DM** to start a session — thread replies continue the conversation
 - **TUI ↔ Slack sync** — prompts and responses sync to a Slack thread via hooks
-- **Session binding** — `/slack-bridge` command auto-binds TUI session to Slack DM
+- **Session binding** — `/slack-bridge:sync-on` command auto-binds TUI session to Slack DM
 - **Streaming responses** — live preview updates, final result overwrites progress
 - **OPTIONS buttons** — clickable suggestion buttons in Slack
 - **Markdown → mrkdwn** — proper formatting, long messages auto-split
@@ -80,7 +80,7 @@ claude plugins install slack-bridge@qianheng-plugins
 
 Then in Claude Code TUI:
 ```
-/slack-bridge    → start daemon + bind session to Slack DM
+/slack-bridge:sync-on    → start daemon + bind session to Slack DM
 ```
 
 ### Manual Setup
@@ -114,10 +114,12 @@ python3 -m venv .venv
 
 | Command | Effect |
 |---------|--------|
-| `/slack-bridge` | Start daemon + bind current session to Slack DM |
-| `/slack-bridge-stop` | Stop daemon |
-| `/slack-bridge-status` | Show status and active sessions |
-| `/slack-bridge-logs` | View recent daemon logs |
+| `/slack-bridge:sync-on` | Start daemon + bind current session to Slack DM |
+| `/slack-bridge:sync-off` | Mute TUI→Slack sync for current session |
+| `/slack-bridge:start-daemon` | Start daemon only |
+| `/slack-bridge:stop-daemon` | Stop daemon |
+| `/slack-bridge:status` | Show status and active sessions |
+| `/slack-bridge:logs` | View recent daemon logs |
 
 ### Slack Commands
 
@@ -128,7 +130,6 @@ python3 -m venv .venv
 | Reply in thread | Thread | Continue session |
 | `@bot resume <UUID>` | Channel | Bind TUI session to thread |
 | `resume <UUID>` | DM | Bind TUI session to thread |
-| `yolo off` | Thread | Disable auto-approve |
 
 ### Makefile Shortcuts
 
@@ -141,15 +142,54 @@ make status    # health check + sessions
 make logs      # tail daemon log
 ```
 
-### TUI ↔ Slack Workflow
+### Workflow: TUI-first (sync to Slack)
+
+Working at your desk? Use TUI as usual. Whenever you want Slack as a mirror — before stepping away, mid-conversation, or right from the start — just run `/slack-bridge:sync-on`. From that point on, everything syncs.
 
 ```
-1. Start TUI:     claude
-2. Bind to Slack:  /slack-bridge
-3. Chat in TUI  →  prompts & responses sync to Slack thread
-4. Reply in Slack → Claude responds in Slack (same session context)
-5. Exit TUI      →  continue from Slack, or resume later
+1. Start TUI:          claude
+2. Work as usual       (sync-on can happen anytime — now, later, whenever)
+3. /slack-bridge:sync-on → session binds to a Slack DM thread
+4. Leave for lunch     →  pull out your phone, reply in the Slack thread
+5. Claude responds     →  same session, same context, no interruption
+6. Back at desk        →  keep working in TUI (Slack chat becomes a
+                          side conversation), or quit + `claude --resume`
+                          to merge the full history back into TUI*
 ```
+
+\* *TUI does not live-reload session history — a platform limitation. Without resume, the Slack portion lives as a parallel branch of the conversation.*
+
+### Workflow: Slack-first (remote control from your phone)
+
+Love [Remote Control](https://code.claude.com/docs/en/remote-control) or [OpenClaw](https://github.com/openclaw/openclaw)? This is the same idea — **remote-control a Claude Code session from your phone** — but through Slack, the tool your team already lives in. No claude.ai subscription needed, works with Bedrock and API keys, and your team can watch along in the channel.
+
+DM or @mention the bot from Slack, and Claude Code starts running on your dev machine. You're now remotely controlling a full Claude Code session — reading files, editing code, running tests — all from your phone.
+
+```
+1. @bot or DM     →  Claude Code session starts on your machine
+2. Chat in thread →  Claude reads, edits, runs tests — streams results back
+3. Keep chatting  →  multi-turn conversation, full tool access
+```
+
+When you're back at your computer, every session header includes a one-liner to resume in TUI:
+
+```bash
+cd /your/project && claude --resume <session-id>
+```
+
+Copy-paste it, and you have the full conversation context locally — then `/slack-bridge:sync-on` to keep both sides in sync.
+
+### Use cases
+
+**Commute coding** — DM the bot from your phone: "refactor the auth middleware to use JWT". Claude works on your cloud dev machine. By the time you arrive, the work is done — `claude --resume` to review and iterate.
+
+**Meeting multitasking** — Kick off a long task in Slack ("migrate the database schema and update all tests"), check progress between agenda items. Claude keeps working while you're in the meeting.
+
+**Shared channel for team visibility** — @mention the bot in a project channel. The whole team sees Claude's work in the thread — great for demos, pair debugging, or keeping teammates in the loop.
+
+**On-call incident response** — Get paged at 2am? DM the bot from your phone: "check the error logs in /var/log/app and find the root cause". Triage from bed before deciding whether to get up.
+
+**Long-running tasks** — Start a large refactor from Slack, go about your day. Slack notifications tell you when Claude needs input or finishes. No terminal session to keep alive.
 
 ## Config
 
@@ -160,9 +200,6 @@ make logs      # tail daemon log
   "daemon_port": 7778,
   "work_dir": "/path/to/default/cwd",
   "claude_args": ["--tools", "Bash,Read,Write,Edit,Glob,Grep"],
-  "require_approval": false,
-  "auto_approve_tools": ["Read", "Glob", "Grep"],
-  "approval_timeout_secs": 300,
   "max_concurrent_sessions": 3,
   "session_archive_after_secs": 3600
 }
