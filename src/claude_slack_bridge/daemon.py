@@ -32,6 +32,7 @@ from claude_slack_bridge.slack_formatter import (
     extract_options,
 )
 from claude_slack_bridge.stream_parser import StreamEvent
+from claude_slack_bridge.tmux_controller import send_message_to_session
 
 logger = logging.getLogger("claude_slack_bridge")
 
@@ -494,8 +495,14 @@ class Daemon:
             else:
                 await self._resume_process(session, text)
         elif self._is_tui_active(session):
-            # TUI is running — start --print alongside, won't sync to TUI
-            await self._resume_process(session, text)
+            # TUI is running — try sending via tmux (Channel 3)
+            cwd = session.cwd or self._config.work_dir
+            sent = await send_message_to_session(cwd, text)
+            if sent:
+                await self._slack.add_reaction(channel_id, event.get("ts", ""), "outbox_tray")
+            else:
+                # Tmux send failed — fall back to --print alongside
+                await self._resume_process(session, text)
         elif session.mode == SessionMode.IDLE.value:
             await self._resume_process(session, text)
 
