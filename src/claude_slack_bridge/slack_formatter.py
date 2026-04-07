@@ -128,9 +128,16 @@ def build_approval_blocks(
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "✅ Approve"},
+                    "text": {"type": "plain_text", "text": "✅ Yes"},
                     "style": "primary",
                     "action_id": "approve_tool",
+                    "value": request_id,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "❌ No"},
+                    "style": "danger",
+                    "action_id": "reject_tool",
                     "value": request_id,
                 },
                 {
@@ -138,19 +145,6 @@ def build_approval_blocks(
                     "text": {"type": "plain_text", "text": "🔓 Trust Session"},
                     "action_id": "trust_session",
                     "value": session_id,
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "⚡ YOLO"},
-                    "action_id": "yolo_mode",
-                    "value": request_id,
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "❌ Reject"},
-                    "style": "danger",
-                    "action_id": "reject_tool",
-                    "value": request_id,
                 },
             ],
         },
