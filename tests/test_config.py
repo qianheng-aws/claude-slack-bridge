@@ -58,9 +58,9 @@ def test_session_key_from_hook_json_with_session_id() -> None:
 
 
 def test_session_key_fallback_to_cwd() -> None:
-    hook_json = {"cwd": "/workplace/qianheng/my-project"}
+    hook_json = {"cwd": "/home/user/my-project"}
     key = BridgeConfig.derive_session_key(hook_json)
-    assert key == "/workplace/qianheng/my-project"
+    assert key == "/home/user/my-project"
 
 
 def test_session_key_with_env_override(monkeypatch: pytest.MonkeyPatch) -> None:

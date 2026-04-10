@@ -8,6 +8,7 @@ from aiohttp.test_utils import AioHTTPTestCase, TestClient
 
 from claude_slack_bridge.config import BridgeConfig
 from claude_slack_bridge.daemon import Daemon
+from claude_slack_bridge.daemon_http import create_http_app
 from claude_slack_bridge.session_manager import SessionMode
 
 
@@ -57,7 +58,7 @@ async def test_hook_pre_tool_use_yolo_mode(config: BridgeConfig) -> None:
     """Issue #2: PreToolUse should auto-approve in YOLO mode."""
     daemon = Daemon(config)
     daemon._yolo_mode = True
-    app = daemon._create_http_app()
+    app = create_http_app(daemon)
 
     from aiohttp.test_utils import TestServer, TestClient
 
@@ -79,7 +80,7 @@ async def test_hook_pre_tool_use_yolo_mode(config: BridgeConfig) -> None:
 async def test_hook_pre_tool_use_auto_approve_safe_tool(config: BridgeConfig) -> None:
     """Issue #2: Safe tools (Read, Glob, Grep) should auto-approve."""
     daemon = Daemon(config)
-    app = daemon._create_http_app()
+    app = create_http_app(daemon)
 
     from aiohttp.test_utils import TestServer, TestClient
 
@@ -103,7 +104,7 @@ async def test_hook_pre_tool_use_no_slack_approves(config: BridgeConfig) -> None
     """Issue #2: Without Slack connection, fail open (approve)."""
     daemon = Daemon(config)
     daemon._slack = None  # No Slack
-    app = daemon._create_http_app()
+    app = create_http_app(daemon)
 
     from aiohttp.test_utils import TestServer, TestClient
 
@@ -134,7 +135,7 @@ async def test_hook_pre_tool_use_trusted_session(config: BridgeConfig) -> None:
     )
     daemon._trusted_sessions.add("s1")
 
-    app = daemon._create_http_app()
+    app = create_http_app(daemon)
 
     from aiohttp.test_utils import TestServer, TestClient
 

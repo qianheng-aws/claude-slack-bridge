@@ -113,3 +113,34 @@ class SlackClient:
             await self._web.reactions_add(channel=channel, timestamp=ts, name=emoji)
         except Exception:
             pass  # Ignore duplicates or permission errors
+
+    async def remove_reaction(self, channel: str, ts: str, emoji: str) -> None:
+        """Remove a reaction emoji from a message."""
+        try:
+            await self._web.reactions_remove(channel=channel, timestamp=ts, name=emoji)
+        except Exception:
+            pass  # Ignore missing reactions or permission errors
+
+    async def set_thread_status(self, channel: str, thread_ts: str, status: str) -> None:
+        """Set assistant thread loading status.
+
+        Pass an empty string to clear the status indicator.
+        Uses assistant.threads.setStatus API (best-effort).
+        """
+        try:
+            await self._web.api_call(
+                "assistant.threads.setStatus",
+                params={"channel_id": channel, "thread_ts": thread_ts, "status": status},
+            )
+        except Exception:
+            logger.debug("assistant.threads.setStatus failed", exc_info=True)
+
+    async def set_thread_title(self, channel: str, thread_ts: str, title: str) -> None:
+        """Set assistant thread title (best-effort)."""
+        try:
+            await self._web.api_call(
+                "assistant.threads.setTitle",
+                params={"channel_id": channel, "thread_ts": thread_ts, "title": title},
+            )
+        except Exception:
+            logger.debug("assistant.threads.setTitle failed", exc_info=True)
