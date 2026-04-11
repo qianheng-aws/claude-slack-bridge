@@ -237,10 +237,8 @@ def create_http_app(daemon) -> web.Application:
         if session.mode == SessionMode.IDLE.value:
             daemon._session_mgr.set_mode(session.session_id, SessionMode.HOOK)
 
-        # Start JSONL watcher if not already watching
-        cwd = payload.get("cwd", "")
-        if cwd and session.session_id not in daemon._file_watcher._watching:
-            daemon._file_watcher.watch(session.session_id, cwd)
+        # JSONL watcher disabled — hooks (PostToolUse, Stop) now provide
+        # all needed information; the watcher caused duplicate messages.
 
         # Sync TUI content to Slack (unless muted)
         if session.session_id not in daemon._tui_sync_muted:
@@ -314,9 +312,6 @@ def create_http_app(daemon) -> web.Application:
             session.tui_active = time.time()
             session.cwd = cwd or session.cwd
             daemon._session_mgr.set_mode(session_key, SessionMode.HOOK)
-            # Start JSONL file watcher (Channel 2)
-            if cwd:
-                daemon._file_watcher.watch(session_key, cwd)
             if daemon._slack and session.channel_id and session.session_id not in daemon._tui_sync_muted:
                 await daemon._slack.post_text(
                     session.channel_id,
