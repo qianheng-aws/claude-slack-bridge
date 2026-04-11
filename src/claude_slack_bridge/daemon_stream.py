@@ -37,8 +37,12 @@ class StreamMixin:
 
     # ── Progress message (single message, overwritten by final result) ──
 
-    async def _update_progress(self, session: Session, line: str) -> None:
-        """Update progress message, overwriting previous tool_use lines."""
+    async def _update_progress(self, session: Session, line: str, replace: bool = False) -> None:
+        """Update progress message.
+
+        If *replace* is True, the last line is replaced instead of appended.
+        Used for tool status so only the current tool shows (no accumulation).
+        """
         sid = session.session_id
         now = time.time()
         if sid not in self._progress:
@@ -48,8 +52,12 @@ class StreamMixin:
             self._progress[sid] = {"msg_ts": msg_ts, "last_update": now, "lines": [line]}
         else:
             state = self._progress[sid]
-            state["lines"].append(line)
-            display = state["lines"][-8:]
+            if replace and state["lines"]:
+                state["lines"][-1] = line
+            else:
+                state["lines"].append(line)
+            # Keep last 3 lines: intermediate text + current tool status
+            display = state["lines"][-3:]
             if now - state["last_update"] >= _EDIT_INTERVAL:
                 text = "\u231b " + "\n".join(display) + _CURSOR
                 try:
@@ -153,7 +161,7 @@ class StreamMixin:
                     detail = msg.tool_input.get("file_path", "")[:60]
                 else:
                     detail = msg.tool_name
-                await self._update_progress(session, "\U0001f527 " + msg.tool_name + ": " + detail)
+                await self._update_progress(session, "\U0001f527 " + msg.tool_name + ": " + detail, replace=True)
 
     # ── Stream event handler (PROCESS mode) ──
 
@@ -251,7 +259,7 @@ class StreamMixin:
                 detail = tool_input.get("file_path", "")[:60]
             else:
                 detail = tool_name
-            await self._update_progress(session, "\U0001fac6 `" + tool_name + "` " + detail)
+            await self._update_progress(session, "\U0001fac6 `" + tool_name + "` " + detail, replace=True)
 
         elif evt.raw_type == "result":
             await self._slack.set_thread_status(session.channel_id, session.thread_ts, "")

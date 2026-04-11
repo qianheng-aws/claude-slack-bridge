@@ -311,7 +311,8 @@ def create_http_app(daemon) -> web.Application:
                 else:
                     detail = tool_name
                 await daemon._update_progress(
-                    session, f"\U0001fac6 `{tool_name}` {detail}"
+                    session, f"\U0001fac6 `{tool_name}` {detail}",
+                    replace=True,
                 )
             elif hook_type == "stop" and daemon._slack and session.channel_id:
                 # Clear thread status (stop glowing)
