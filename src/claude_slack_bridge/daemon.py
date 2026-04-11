@@ -54,6 +54,8 @@ class Daemon(StreamMixin, EventsMixin):
         self._tui_sync_muted: set[str] = set()
         # Prompts forwarded from Slack→tmux — skip echo back via UserPromptSubmit hook
         self._forwarded_prompts: set[str] = set()
+        # Pending approval messages: session_id -> msg_ts (for cleanup on TUI approval)
+        self._pending_approval_msgs: dict[str, str] = {}
         # Conversation parser (Channel 2: JSONL file monitoring)
         self._conv_parser = ConversationParser()
         self._file_watcher = SessionFileWatcher(

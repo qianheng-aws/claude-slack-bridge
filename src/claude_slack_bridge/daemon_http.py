@@ -19,6 +19,7 @@ from claude_slack_bridge.session_manager import SessionMode
 from claude_slack_bridge.slack_formatter import (
     SLACK_MSG_LIMIT,
     build_approval_blocks,
+    build_approval_resolved_blocks,
     build_session_header_blocks,
     build_tool_notification_blocks,
     build_user_prompt_blocks,
@@ -260,10 +261,22 @@ def create_http_app(daemon) -> web.Application:
                         session.channel_id, blocks, "User prompt (TUI)", session.thread_ts
                     )
             elif hook_type == "post-tool-use" and daemon._slack and session.channel_id:
-                # Compact one-liner for TUI sessions (not full blocks)
-                # Keeps Slack thread clean like the TUI experience
                 tool_name = payload.get("tool_name", "")
                 tool_input = payload.get("tool_input", {})
+
+                # If there's a pending approval message, replace it with result
+                pending_ts = daemon._pending_approval_msgs.pop(session.session_id, None)
+                if pending_ts:
+                    try:
+                        blocks = build_approval_resolved_blocks(tool_name, "approved", "")
+                        await daemon._slack.update_blocks(
+                            session.channel_id, pending_ts, blocks,
+                            text="\u2705 Approved in TUI"
+                        )
+                    except Exception:
+                        logger.debug("Failed to update approval message", exc_info=True)
+
+                # Compact one-liner progress update
                 if tool_name == "Bash":
                     detail = tool_input.get("command", "")[:80]
                 elif tool_name in ("Read", "Write", "Edit", "Glob", "Grep"):
@@ -442,12 +455,14 @@ def create_http_app(daemon) -> web.Application:
             session_name=session.session_name,
             request_id=request_id,
         )
-        await daemon._slack.post_blocks(
+        approval_msg_ts = await daemon._slack.post_blocks(
             session.channel_id,
             blocks,
-            f"🔐 Approve {tool_name}?",
+            f"\U0001f510 Approve {tool_name}?",
             session.thread_ts,
         )
+        # Track for cleanup if TUI approves before Slack click
+        daemon._pending_approval_msgs[session.session_id] = approval_msg_ts
 
         # Block until Slack button click or timeout
         state = daemon._approval_mgr.create(request_id)
@@ -455,6 +470,7 @@ def create_http_app(daemon) -> web.Application:
             timeout=daemon._config.approval_timeout_secs
         )
         daemon._approval_mgr.cleanup(request_id)
+        daemon._pending_approval_msgs.pop(session.session_id, None)
 
         # Clear thread status after approval
         await daemon._slack.set_thread_status(
