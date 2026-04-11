@@ -504,9 +504,13 @@ def create_http_app(daemon) -> web.Application:
             session.channel_id, session.thread_ts, ""
         )
 
-        return web.Response(
-            text="approved" if result == "approved" else "rejected"
-        )
+        if result == "approved":
+            return web.Response(text="approved")
+        elif result == "rejected":
+            return web.Response(text="rejected")
+        else:
+            # Timed out — return "timeout" so hook falls through to TUI prompt
+            return web.Response(text="timeout")
 
     app = web.Application()
     app.router.add_routes(routes)
