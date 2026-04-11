@@ -186,11 +186,8 @@ def create_http_app(daemon) -> web.Application:
             # All other modes (HOOK, IDLE) are TUI sessions — TUI has its
             # own approval UI; blocking here causes double-approval.
             if session.mode != SessionMode.PROCESS.value:
-                if session.session_id not in daemon._tui_sync_muted:
-                    blocks = build_tool_notification_blocks(tool_name, tool_input)
-                    await daemon._slack.post_blocks(
-                        session.channel_id, blocks, f"\U0001f527 {tool_name}", session.thread_ts
-                    )
+                # Auto-approve silently — PostToolUse will show compact
+                # one-liner in the single progress message (no flood).
                 return web.Response(text="approved")
 
             # PROCESS mode: post approval buttons to the Slack thread
