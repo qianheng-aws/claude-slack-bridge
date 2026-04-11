@@ -32,7 +32,7 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/claude-slack-bridge-hook PermissionRequest",
-            "timeout": 310000
+            "timeout": 86410000
           }
         ]
       }
