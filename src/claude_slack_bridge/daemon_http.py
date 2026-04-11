@@ -242,16 +242,37 @@ def create_http_app(daemon) -> web.Application:
         if session.origin != "tui":
             session.origin = "tui"
 
-        # JSONL watcher disabled — hooks (PostToolUse, Stop) now provide
-        # all needed information; the watcher caused duplicate messages.
+        # Start JSONL watcher for intermediate assistant text (reasoning
+        # between tool calls). Duplicates with Stop hook are prevented
+        # by the _finalized_sessions set.
+        cwd = payload.get("cwd", "")
+        if cwd and session.session_id not in daemon._file_watcher._watching:
+            daemon._file_watcher.watch(session.session_id, cwd)
 
         # Sync TUI content to Slack (unless muted)
         if session.session_id not in daemon._tui_sync_muted:
-            if hook_type == "user-prompt":
-                # Don't echo user prompts to Slack — user either typed it
-                # in Slack (would be echo) or in TUI (they know what they typed).
-                # Only tool activity and Claude responses are worth syncing.
-                pass
+            if hook_type == "user-prompt" and daemon._slack and session.channel_id:
+                # New turn starting — clear finalized flag so JSONL watcher can post
+                daemon._finalized_sessions.discard(session.session_id)
+                prompt_text = payload.get("prompt", "")
+                stripped = prompt_text.strip()
+                # Skip Slack→tmux echo (forwarded from Slack, would be duplicate)
+                if stripped in daemon._forwarded_prompts:
+                    daemon._forwarded_prompts.discard(stripped)
+                # Skip system messages
+                elif stripped.startswith("<") and any(
+                    tag in stripped[:100]
+                    for tag in ("task-notification", "system-reminder",
+                                "local-command", "command-name", "command-message")
+                ):
+                    pass
+                # TUI-typed prompt — sync to Slack so team can see what was asked
+                elif stripped:
+                    await daemon._slack.post_text(
+                        session.channel_id,
+                        f"\U0001f4ac *User:* {stripped[:3000]}",
+                        session.thread_ts,
+                    )
             elif hook_type == "post-tool-use" and daemon._slack and session.channel_id:
                 tool_name = payload.get("tool_name", "")
                 tool_input = payload.get("tool_input", {})
@@ -310,6 +331,8 @@ def create_http_app(daemon) -> web.Application:
             session.tui_active = time.time()
             session.cwd = cwd or session.cwd
             daemon._session_mgr.set_mode(session_key, SessionMode.HOOK)
+            if cwd:
+                daemon._file_watcher.watch(session_key, cwd)
             if daemon._slack and session.channel_id and session.session_id not in daemon._tui_sync_muted:
                 await daemon._slack.post_text(
                     session.channel_id,

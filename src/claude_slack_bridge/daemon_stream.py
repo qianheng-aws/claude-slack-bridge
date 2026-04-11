@@ -97,6 +97,9 @@ class StreamMixin:
                     session.channel_id, chunk, session.thread_ts
                 )
 
+        # Mark finalized so JSONL watcher won't duplicate
+        self._finalized_sessions.add(sid)
+
         if choices:
             blocks = build_options_blocks(choices)
             await self._slack.post_blocks(
@@ -115,6 +118,9 @@ class StreamMixin:
         if session.session_id in self._tui_sync_muted:
             return
         if session.mode != SessionMode.HOOK.value:
+            return
+        # Skip if this turn was already finalized by Stop hook
+        if session.session_id in self._finalized_sessions:
             return
 
         for msg in messages:

@@ -56,6 +56,8 @@ class Daemon(StreamMixin, EventsMixin):
         self._forwarded_prompts: set[str] = set()
         # Pending approval messages: session_id -> msg_ts (for cleanup on TUI approval)
         self._pending_approval_msgs: dict[str, str] = {}
+        # Sessions that have been finalized this turn — JSONL watcher skips these
+        self._finalized_sessions: set[str] = set()
         # Conversation parser (Channel 2: JSONL file monitoring)
         self._conv_parser = ConversationParser()
         self._file_watcher = SessionFileWatcher(
