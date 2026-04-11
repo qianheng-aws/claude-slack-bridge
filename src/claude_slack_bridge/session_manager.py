@@ -67,10 +67,14 @@ class SessionManager:
         if s:
             return s
         # Fallback: match by cwd (hooks may send cwd as session_key)
+        # When multiple sessions share the same cwd, prefer the most
+        # recently active one (highest last_active timestamp).
+        best: Session | None = None
         for sess in self._sessions.values():
             if sess.status == "active" and sess.cwd == session_id:
-                return sess
-        return None
+                if best is None or sess.last_active > best.last_active:
+                    best = sess
+        return best
 
     def find_by_thread(self, channel_id: str, thread_ts: str) -> Session | None:
         sid = self._thread_index.get((channel_id, thread_ts))

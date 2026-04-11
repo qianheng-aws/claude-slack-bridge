@@ -1,4 +1,7 @@
 import asyncio
+import json
+import os
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
 
@@ -7,9 +10,10 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase, TestClient
 
 from claude_slack_bridge.config import BridgeConfig
+from claude_slack_bridge.conversation_parser import ConversationParser
 from claude_slack_bridge.daemon import Daemon
-from claude_slack_bridge.daemon_http import create_http_app
-from claude_slack_bridge.session_manager import SessionMode
+from claude_slack_bridge.daemon_http import create_http_app, _read_last_turn_from_jsonl
+from claude_slack_bridge.session_manager import SessionManager, SessionMode
 
 
 @pytest.fixture
@@ -152,3 +156,134 @@ async def test_hook_pre_tool_use_trusted_session(config: BridgeConfig) -> None:
         assert resp.status == 200
         text = await resp.text()
         assert text == "approved"
+
+
+# ── _read_last_turn_from_jsonl tests ──
+
+
+def test_read_last_turn_from_jsonl(tmp_path: Path) -> None:
+    """_read_last_turn_from_jsonl returns assistant text after the last user message."""
+    # Build a fake JSONL file mimicking Claude Code session format
+    session_id = "test-session-abc"
+    cwd = str(tmp_path / "project")
+    project_dir = cwd.replace("/", "-").replace(".", "-")
+    jsonl_dir = Path.home() / ".claude" / "projects" / project_dir
+    jsonl_dir.mkdir(parents=True, exist_ok=True)
+    jsonl_path = jsonl_dir / f"{session_id}.jsonl"
+
+    lines = [
+        json.dumps({"type": "user", "message": {"content": "Hello"}, "timestamp": "t1"}),
+        json.dumps({"type": "assistant", "message": {"content": "Hi there"}, "timestamp": "t2"}),
+        json.dumps({"type": "user", "message": {"content": "What is 2+2?"}, "timestamp": "t3"}),
+        json.dumps({"type": "assistant", "message": {"content": "The answer is 4."}, "timestamp": "t4"}),
+        json.dumps({"type": "assistant", "message": {"content": "Anything else?"}, "timestamp": "t5"}),
+    ]
+    jsonl_path.write_text("\n".join(lines) + "\n")
+
+    try:
+        parser = ConversationParser()
+        result = _read_last_turn_from_jsonl(parser, session_id, cwd)
+        # Should contain assistant text after the last user message ("What is 2+2?")
+        assert "The answer is 4." in result
+        assert "Anything else?" in result
+        # Should NOT contain the first assistant reply (before the last user msg)
+        assert "Hi there" not in result
+    finally:
+        jsonl_path.unlink(missing_ok=True)
+        # Clean up the directory if empty
+        try:
+            jsonl_dir.rmdir()
+        except OSError:
+            pass
+
+
+def test_read_last_turn_from_jsonl_empty_cwd() -> None:
+    """_read_last_turn_from_jsonl returns empty string for empty cwd."""
+    parser = ConversationParser()
+    result = _read_last_turn_from_jsonl(parser, "nonexistent", "")
+    assert result == ""
+
+
+# ── Session lookup by cwd fallback tests ──
+
+
+def test_session_get_by_cwd_prefers_most_recent(tmp_path: Path) -> None:
+    """When multiple sessions share the same cwd, get() returns the most recently active."""
+    mgr = SessionManager(tmp_path / "sessions.json")
+
+    # Create two sessions with the same cwd
+    s1 = mgr.create("s1", "old session", "C1", "t1", SessionMode.HOOK)
+    s1.cwd = "/workplace/project"
+    s1.last_active = 1000.0
+
+    s2 = mgr.create("s2", "new session", "C2", "t2", SessionMode.HOOK)
+    s2.cwd = "/workplace/project"
+    s2.last_active = 2000.0
+
+    # Look up by cwd — should return the more recently active session (s2)
+    result = mgr.get("/workplace/project")
+    assert result is not None
+    assert result.session_id == "s2"
+
+
+def test_session_get_by_cwd_skips_archived(tmp_path: Path) -> None:
+    """Archived sessions should not match cwd lookup."""
+    mgr = SessionManager(tmp_path / "sessions.json")
+
+    s1 = mgr.create("s1", "archived", "C1", "t1", SessionMode.HOOK)
+    s1.cwd = "/workplace/project"
+    s1.last_active = 9999.0  # Very recent but archived
+    mgr.archive("s1")
+
+    s2 = mgr.create("s2", "active", "C2", "t2", SessionMode.HOOK)
+    s2.cwd = "/workplace/project"
+    s2.last_active = 1000.0
+
+    result = mgr.get("/workplace/project")
+    assert result is not None
+    assert result.session_id == "s2"
+
+
+def test_session_get_by_id_still_works(tmp_path: Path) -> None:
+    """Direct session_id lookup should still take priority over cwd fallback."""
+    mgr = SessionManager(tmp_path / "sessions.json")
+
+    s1 = mgr.create("s1", "session one", "C1", "t1", SessionMode.HOOK)
+    s1.cwd = "/workplace/project"
+
+    result = mgr.get("s1")
+    assert result is not None
+    assert result.session_id == "s1"
+
+
+# ── _forwarded_prompts bounded size tests ──
+
+
+def test_forwarded_prompts_capped_at_50(config: BridgeConfig) -> None:
+    """_forwarded_prompts should not grow beyond 50 entries."""
+    daemon = Daemon(config)
+
+    # Simulate adding 50 prompts
+    for i in range(50):
+        daemon._forwarded_prompts.add(f"prompt-{i}")
+    assert len(daemon._forwarded_prompts) == 50
+
+    # The 51st add in daemon_events.py checks len >= 50 and clears first.
+    # Simulate that logic here:
+    if len(daemon._forwarded_prompts) >= 50:
+        daemon._forwarded_prompts.clear()
+    daemon._forwarded_prompts.add("prompt-50")
+    assert len(daemon._forwarded_prompts) == 1
+    assert "prompt-50" in daemon._forwarded_prompts
+
+
+def test_forwarded_prompts_under_cap_not_cleared(config: BridgeConfig) -> None:
+    """Under the cap, prompts accumulate normally."""
+    daemon = Daemon(config)
+
+    for i in range(10):
+        if len(daemon._forwarded_prompts) >= 50:
+            daemon._forwarded_prompts.clear()
+        daemon._forwarded_prompts.add(f"prompt-{i}")
+
+    assert len(daemon._forwarded_prompts) == 10

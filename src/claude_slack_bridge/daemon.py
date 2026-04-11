@@ -53,6 +53,7 @@ class Daemon(StreamMixin, EventsMixin):
         # Sessions with TUI→Slack sync muted
         self._tui_sync_muted: set[str] = set()
         # Prompts forwarded from Slack→tmux — skip echo back via UserPromptSubmit hook
+        # Capped at 50 entries; cleared entirely when exceeded (older entries are stale)
         self._forwarded_prompts: set[str] = set()
         # Pending approval messages: session_id -> msg_ts (for cleanup on TUI approval)
         self._pending_approval_msgs: dict[str, str] = {}

@@ -224,6 +224,8 @@ class EventsMixin:
             cwd = session.cwd or self._config.work_dir
             sent = await send_message_to_session(cwd, text)
             if sent:
+                if len(self._forwarded_prompts) >= 50:
+                    self._forwarded_prompts.clear()
                 self._forwarded_prompts.add(text.strip())
             else:
                 # TUI gone — notify user and fall back to --print
