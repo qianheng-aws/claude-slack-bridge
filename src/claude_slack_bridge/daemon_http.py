@@ -245,23 +245,33 @@ def create_http_app(daemon) -> web.Application:
         if session.session_id not in daemon._tui_sync_muted:
             if hook_type == "user-prompt" and daemon._slack and session.channel_id:
                 prompt_text = payload.get("prompt", "")
-                # Skip if this prompt was forwarded from Slack → tmux (avoid echo)
+                # Skip Slack→tmux echo
                 if prompt_text.strip() in daemon._forwarded_prompts:
                     daemon._forwarded_prompts.discard(prompt_text.strip())
+                # Skip system messages (task-notification, system-reminder, etc.)
+                elif prompt_text.strip().startswith("<") and any(
+                    tag in prompt_text[:100]
+                    for tag in ("task-notification", "system-reminder", "local-command")
+                ):
+                    pass
                 else:
                     blocks = build_user_prompt_blocks(prompt_text)
                     await daemon._slack.post_blocks(
                         session.channel_id, blocks, "User prompt (TUI)", session.thread_ts
                     )
             elif hook_type == "post-tool-use" and daemon._slack and session.channel_id:
+                # Compact one-liner for TUI sessions (not full blocks)
+                # Keeps Slack thread clean like the TUI experience
                 tool_name = payload.get("tool_name", "")
                 tool_input = payload.get("tool_input", {})
-                tool_output = payload.get("tool_output", "")
-                duration_ms = payload.get("duration_ms", 0)
-                from claude_slack_bridge.slack_formatter import build_post_tool_blocks
-                blocks = build_post_tool_blocks(tool_name, tool_input, tool_output, duration_ms)
-                await daemon._slack.post_blocks(
-                    session.channel_id, blocks, f"Tool: {tool_name}", session.thread_ts
+                if tool_name == "Bash":
+                    detail = tool_input.get("command", "")[:80]
+                elif tool_name in ("Read", "Write", "Edit", "Glob", "Grep"):
+                    detail = tool_input.get("file_path", tool_input.get("pattern", ""))[:80]
+                else:
+                    detail = tool_name
+                await daemon._update_progress(
+                    session, f"\U0001fac6 `{tool_name}` {detail}"
                 )
             elif hook_type == "stop" and daemon._slack and session.channel_id:
                 # PROCESS mode already finalizes via _on_stream_event result.
