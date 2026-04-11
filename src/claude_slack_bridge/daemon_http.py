@@ -249,8 +249,9 @@ def create_http_app(daemon) -> web.Application:
         # Sync TUI content to Slack (unless muted)
         if session.session_id not in daemon._tui_sync_muted:
             if hook_type == "user-prompt" and daemon._slack and session.channel_id:
-                # New turn starting — clear finalized flag so JSONL watcher can post
+                # New turn starting — clear stale state from previous turn
                 daemon._finalized_sessions.discard(session.session_id)
+                daemon._progress.pop(session.session_id, None)
                 prompt_text = payload.get("prompt", "")
                 stripped = prompt_text.strip()
                 # Skip Slack→tmux echo (forwarded from Slack, would be duplicate)
