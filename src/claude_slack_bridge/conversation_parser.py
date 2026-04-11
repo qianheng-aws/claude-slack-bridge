@@ -149,6 +149,15 @@ class SessionFileWatcher:
 
     def watch(self, session_id: str, cwd: str) -> None:
         self._watching[session_id] = cwd
+        # Skip existing content — only process messages written after watch starts
+        path = _session_file_path(session_id, cwd)
+        if os.path.exists(path):
+            state = self._parser._states.setdefault(session_id, _ParseState())
+            if state.last_offset == 0:
+                try:
+                    state.last_offset = os.path.getsize(path)
+                except OSError:
+                    pass
         if not self._task or self._task.done():
             self._task = asyncio.ensure_future(self._poll_loop())
 
