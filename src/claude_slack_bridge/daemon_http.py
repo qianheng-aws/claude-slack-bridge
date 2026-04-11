@@ -180,13 +180,14 @@ def create_http_app(daemon) -> web.Application:
                     # Cannot reach Slack — fail open so TUI isn't blocked
                     return web.Response(text="approved")
 
-            # For TUI (HOOK mode): notification only, no blocking approval.
-            # TUI has its own approval UI; blocking here causes double-approval.
-            if session.mode == SessionMode.HOOK.value or session.tui_active:
+            # Only PROCESS mode (daemon's own --print) needs Slack approval.
+            # All other modes (HOOK, IDLE) are TUI sessions — TUI has its
+            # own approval UI; blocking here causes double-approval.
+            if session.mode != SessionMode.PROCESS.value:
                 if session.session_id not in daemon._tui_sync_muted:
                     blocks = build_tool_notification_blocks(tool_name, tool_input)
                     await daemon._slack.post_blocks(
-                        session.channel_id, blocks, f"🔧 {tool_name}", session.thread_ts
+                        session.channel_id, blocks, f"\U0001f527 {tool_name}", session.thread_ts
                     )
                 return web.Response(text="approved")
 
@@ -228,9 +229,12 @@ def create_http_app(daemon) -> web.Application:
         if not session:
             return web.json_response({"error": "unknown session"}, status=404)
 
-        # TUI hook arrived — just sync to Slack, don't kill --print
+        # TUI hook arrived — update session state
         session.touch()
         session.tui_active = time.time()
+        # Promote IDLE → HOOK when TUI hooks start arriving
+        if session.mode == SessionMode.IDLE.value:
+            daemon._session_mgr.set_mode(session.session_id, SessionMode.HOOK)
 
         # Start JSONL watcher if not already watching
         cwd = payload.get("cwd", "")
@@ -255,15 +259,11 @@ def create_http_app(daemon) -> web.Application:
                     session.channel_id, blocks, f"Tool: {tool_name}", session.thread_ts
                 )
             elif hook_type == "stop" and daemon._slack and session.channel_id:
-                # Only finalize from hook if NOT in PROCESS mode —
-                # PROCESS mode already finalizes via _on_stream_event result
+                # PROCESS mode already finalizes via _on_stream_event result.
+                # HOOK/IDLE modes are TUI sessions — finalize from hook.
                 if session.mode != SessionMode.PROCESS.value:
                     response_text = payload.get("response", "")
                     if response_text:
-                        logger.info(
-                            "Stop hook → _finalize_progress for %s (mode=%s, len=%d)",
-                            session.session_id[:12], session.mode, len(response_text),
-                        )
                         await daemon._finalize_progress(session, response_text)
 
         if hook_type == "stop":
