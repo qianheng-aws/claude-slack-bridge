@@ -372,7 +372,7 @@ def create_http_app(daemon) -> web.Application:
                     line = "\U0001f916 `Agent` " + tool_input.get("description", tool_input.get("prompt", ""))[:60]
                 else:
                     line = "\U0001fac6 `" + tool_name + "`"
-                await daemon._update_progress(session, line, replace=True)
+                await daemon._update_progress(session, line, is_tool=True)
             elif hook_type == "stop" and daemon._slack and session.channel_id:
                 # Stop JSONL watcher FIRST — prevents race with finalize
                 daemon._file_watcher.unwatch(session.session_id)

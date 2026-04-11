@@ -37,11 +37,12 @@ class StreamMixin:
 
     # ── Progress message (single message, overwritten by final result) ──
 
-    async def _update_progress(self, session: Session, line: str, replace: bool = False) -> None:
-        """Update progress message.
+    async def _update_progress(self, session: Session, line: str, is_tool: bool = False) -> None:
+        """Update progress message with separate slots for text and tool status.
 
-        If *replace* is True, the last line is replaced instead of appended.
-        Used for tool status so only the current tool shows (no accumulation).
+        Progress message has two areas that don't overwrite each other:
+        - _text: intermediate assistant reasoning (from JSONL watcher)
+        - _tool: current tool status (from PostToolUse hook, replaces previous)
         """
         sid = session.session_id
         now = time.time()
@@ -49,16 +50,30 @@ class StreamMixin:
             msg_ts = await self._slack.post_text(
                 session.channel_id, line + _CURSOR, session.thread_ts
             )
-            self._progress[sid] = {"msg_ts": msg_ts, "last_update": now, "lines": [line]}
+            self._progress[sid] = {
+                "msg_ts": msg_ts, "last_update": now, "lines": [],
+                "_text": "" if is_tool else line,
+                "_tool": line if is_tool else "",
+            }
         else:
             state = self._progress[sid]
-            if replace and state["lines"]:
-                state["lines"][-1] = line
+            if is_tool:
+                state["_tool"] = line
             else:
-                state["lines"].append(line)
-            display = state["lines"][-3:]
+                state["_text"] = line
+            state["lines"].append(line)  # Keep for finalize context
+
+            # Build display: text + tool (both visible)
+            parts = []
+            if state["_text"]:
+                parts.append(state["_text"])
+            if state["_tool"]:
+                parts.append(state["_tool"])
+            if not parts:
+                return
+
             if now - state["last_update"] >= _EDIT_INTERVAL:
-                text = "\n".join(display) + _CURSOR
+                text = "\n".join(parts) + _CURSOR
                 try:
                     await self._slack.web.chat_update(
                         channel=session.channel_id, ts=state["msg_ts"], text=text[:_SLACK_MAX_TEXT]
@@ -140,7 +155,7 @@ class StreamMixin:
                     detail = msg.tool_input.get("file_path", "")[:60]
                 else:
                     detail = msg.tool_name
-                await self._update_progress(session, "\U0001fac6 `" + msg.tool_name + "` " + detail, replace=True)
+                await self._update_progress(session, "\U0001fac6 `" + msg.tool_name + "` " + detail, is_tool=True)
 
     # ── Stream event handler (PROCESS mode) ──
 
@@ -238,7 +253,7 @@ class StreamMixin:
                 detail = tool_input.get("file_path", "")[:60]
             else:
                 detail = tool_name
-            await self._update_progress(session, "\U0001fac6 `" + tool_name + "` " + detail, replace=True)
+            await self._update_progress(session, "\U0001fac6 `" + tool_name + "` " + detail, is_tool=True)
 
         elif evt.raw_type == "result":
             await self._slack.set_thread_status(session.channel_id, session.thread_ts, "")
