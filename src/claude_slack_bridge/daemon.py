@@ -98,13 +98,14 @@ class Daemon(StreamMixin, EventsMixin):
         )
         await self._slack.post_blocks(channel_id, blocks, f"Session: {name}", thread_ts)
 
-        self._session_mgr.create(
+        session = self._session_mgr.create(
             session_id=session_id,
             session_name=name,
             channel_id=channel_id,
             thread_ts=thread_ts,
             mode=SessionMode.PROCESS,
         )
+        session.origin = "slack"
 
         # Pre-seed progress state with reaction controller
         if reaction_controller:
@@ -224,6 +225,7 @@ class Daemon(StreamMixin, EventsMixin):
                 mode=SessionMode.HOOK,
             )
             session.cwd = cwd
+            session.origin = "tui"
             logger.info("Auto-bound TUI session %s to DM %s", session_key, dm_channel)
             return session
         except Exception:

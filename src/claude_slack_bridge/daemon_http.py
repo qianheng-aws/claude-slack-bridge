@@ -122,6 +122,7 @@ def create_http_app(daemon) -> web.Application:
                 daemon._session_mgr._thread_index[(dm_channel, thread_ts)] = session.session_id
                 daemon._session_mgr._save()
         session.cwd = cwd
+        session.origin = "tui"
 
         return web.json_response({
             "ok": True,
@@ -289,6 +290,10 @@ def create_http_app(daemon) -> web.Application:
                 # HOOK/IDLE modes are TUI sessions — finalize from hook.
                 if session.mode != SessionMode.PROCESS.value:
                     response_text = payload.get("response", "")
+                    logger.info(
+                        "Stop hook: session=%s mode=%s response_len=%d",
+                        session.session_id[:12], session.mode, len(response_text),
+                    )
                     if response_text:
                         await daemon._finalize_progress(session, response_text)
 

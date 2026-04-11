@@ -26,6 +26,7 @@ class Session:
     status: str = "active"
     cwd: str = ""  # working directory for claude processes
     tui_active: float = 0  # timestamp of last TUI hook activity
+    origin: str = ""  # "slack" (from mention/DM) or "tui" (from bind/hooks)
 
     def touch(self) -> None:
         self.last_active = time.time()

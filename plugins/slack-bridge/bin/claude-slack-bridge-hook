@@ -139,6 +139,7 @@ def main():
     except json.JSONDecodeError:
         sys.exit(0)
 
+
     port = load_port()
     payload = build_payload(event_type, stdin_json)
     endpoint = f"/hooks/{event_type}"
