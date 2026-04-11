@@ -208,15 +208,15 @@ class EventsMixin:
 
         if session.mode == SessionMode.PROCESS.value:
             await self._resume_process(session, text)
-        elif self._is_tui_active(session):
+        else:
+            # Try tmux send-keys first — works when TUI is idle waiting for input
             cwd = session.cwd or self._config.work_dir
             sent = await send_message_to_session(cwd, text)
             if sent:
                 await self._slack.add_reaction(channel_id, event.get("ts", ""), "outbox_tray")
             else:
+                # No tmux pane found — fall back to --print
                 await self._resume_process(session, text)
-        elif session.mode == SessionMode.IDLE.value:
-            await self._resume_process(session, text)
 
     async def _handle_interactive(self, action: dict, payload: dict) -> None:
         action_id = action.get("action_id", "")
