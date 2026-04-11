@@ -29,6 +29,38 @@ from claude_slack_bridge.slack_formatter import (
 _SLACK_MAX_TEXT = SLACK_MSG_LIMIT
 
 
+def _read_last_turn_from_jsonl(conv_parser, session_id: str, cwd: str) -> str:
+    """Read all assistant text from the last turn in the JSONL file.
+
+    Claude Island pattern: JSONL is the single source of truth.
+    Returns all assistant text blocks after the last user message.
+    """
+    if not cwd:
+        return ""
+    try:
+        # Force a fresh incremental read
+        messages = conv_parser.parse_incremental(session_id, cwd)
+        # Get all messages including previously parsed ones
+        all_msgs = conv_parser.get_all_messages(session_id)
+        if not all_msgs:
+            return ""
+
+        # Find last user message index, collect all assistant text after it
+        last_user_idx = -1
+        for i, msg in enumerate(all_msgs):
+            if msg.role == "user":
+                last_user_idx = i
+
+        parts: list[str] = []
+        start = last_user_idx + 1 if last_user_idx >= 0 else 0
+        for msg in all_msgs[start:]:
+            if msg.role == "assistant" and msg.text:
+                parts.append(msg.text)
+        return "\n\n".join(parts)
+    except Exception:
+        return ""
+
+
 def create_http_app(daemon) -> web.Application:
     """Build an aiohttp Application with all daemon HTTP routes.
 
@@ -321,11 +353,19 @@ def create_http_app(daemon) -> web.Application:
                     asyncio.ensure_future(rc.finalize(error=False))
 
                 # PROCESS mode already finalizes via _on_stream_event result.
-                # HOOK/IDLE modes are TUI sessions — finalize from hook.
+                # HOOK/IDLE modes are TUI sessions — read JSONL for full turn.
                 if session.mode != SessionMode.PROCESS.value:
-                    response_text = payload.get("response", "")
-                    if response_text:
-                        await daemon._finalize_progress(session, response_text)
+                    # Read JSONL file for complete turn content (Claude Island pattern)
+                    # This is the single source of truth — no race with watcher.
+                    cwd = payload.get("cwd", "") or session.cwd
+                    full_text = _read_last_turn_from_jsonl(
+                        daemon._conv_parser, session.session_id, cwd
+                    )
+                    if not full_text:
+                        # Fallback to hook payload
+                        full_text = payload.get("response", "")
+                    if full_text:
+                        await daemon._finalize_progress(session, full_text)
 
         if hook_type == "stop":
             # TUI exited — drain queued Slack messages
