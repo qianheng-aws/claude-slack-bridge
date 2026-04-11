@@ -240,12 +240,8 @@ def create_http_app(daemon) -> web.Application:
         if session.origin != "tui":
             session.origin = "tui"
 
-        # Start JSONL watcher for intermediate assistant text (reasoning
-        # between tool calls). Duplicates with Stop hook are prevented
-        # by the _finalized_sessions set.
-        cwd = payload.get("cwd", "")
-        if cwd and session.session_id not in daemon._file_watcher._watching:
-            daemon._file_watcher.watch(session.session_id, cwd)
+        # JSONL watcher disabled — caused persistent duplicate messages
+        # due to race conditions with Stop hook. Hooks cover all sync needs.
 
         # Sync TUI content to Slack (unless muted)
         if session.session_id not in daemon._tui_sync_muted:
@@ -351,8 +347,6 @@ def create_http_app(daemon) -> web.Application:
             session.tui_active = time.time()
             session.cwd = cwd or session.cwd
             daemon._session_mgr.set_mode(session_key, SessionMode.HOOK)
-            if cwd:
-                daemon._file_watcher.watch(session_key, cwd)
             if daemon._slack and session.channel_id and session.session_id not in daemon._tui_sync_muted:
                 await daemon._slack.post_text(
                     session.channel_id,
