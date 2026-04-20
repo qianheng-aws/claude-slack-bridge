@@ -377,14 +377,14 @@ def build_approval_blocks(
                 },
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "Trust Session"},
-                    "action_id": "trust_session",
-                    "value": session_id,
+                    "text": {"type": "plain_text", "text": "Trust"},
+                    "action_id": "trust_tool",
+                    "value": request_id,
                 },
                 {
                     "type": "button",
                     "text": {"type": "plain_text", "text": "YOLO"},
-                    "action_id": "yolo_mode",
+                    "action_id": "yolo_session",
                     "value": session_id,
                 },
                 {

@@ -42,9 +42,9 @@ class Daemon(StreamMixin, EventsMixin):
         # Progress message: session_id -> {msg_ts, last_update, lines: list[str]}
         # All tool calls and streaming text go into ONE message, overwritten by final result
         self._progress: dict[str, dict] = {}
-        # Trust/YOLO state
+        # YOLO: per-session auto-allow until daemon restart. Backs the
+        # "YOLO" button on Slack approval cards.
         self._trusted_sessions: set[str] = set()
-        self._yolo_mode: bool = False
         self._cleanup_task: asyncio.Task | None = None
         # Event dedup cache — prevents duplicate Slack event processing
         self._seen = SeenCache()

@@ -134,7 +134,7 @@ claude plugins install slack-bridge@qianheng-plugins
 | `@bot resume <UUID>` | 频道 | 绑定 TUI 会话到线程 |
 | `resume <UUID>` | 私信 | 绑定 TUI 会话到线程 |
 | `!stop` | 线程 | 终止运行中的会话 |
-| `yolo off` | 线程 | 关闭 YOLO/Trust 模式 |
+| `yolo off` | 线程 | 撤销当前 session 的 YOLO 自动放行 |
 | `sync off` / `sync on` | 线程 | 静音/恢复 TUI→Slack 同步 |
 
 ## 更新
@@ -148,9 +148,8 @@ claude plugins install slack-bridge@qianheng-plugins
 # 2. 从本地 marketplace 刷新 plugin cache
 claude plugins update slack-bridge@qianheng-plugins
 
-# 3. 重跑 init —— 用来重新注册 PermissionRequest hook
-#    （见 issue #14，上游 anthropics/claude-code#27398），
-#    同时承接新版本的 hook 布线或 config 默认值
+# 3. 重跑 init 以承接新的启动器路径 / 默认 config；
+#    同时会清理旧版本写入的 hook 残留
 .venv/bin/claude-slack-bridge init
 
 # 4. 重启 daemon 加载新的后端代码

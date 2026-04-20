@@ -58,10 +58,16 @@ async def test_daemon_handle_interactive_reject(config: BridgeConfig) -> None:
     assert state.status == "rejected"
 
 
-async def test_hook_pre_tool_use_yolo_mode(config: BridgeConfig) -> None:
-    """Issue #2: PreToolUse should auto-approve in YOLO mode."""
+async def test_hook_pre_tool_use_yolo_session(config: BridgeConfig) -> None:
+    """YOLO button marks the session trusted → PreToolUse auto-approves."""
     daemon = Daemon(config)
-    daemon._yolo_mode = True
+    # Pre-register the session and mark it trusted, as the YOLO button does.
+    from claude_slack_bridge.session_manager import SessionMode
+    daemon._session_mgr.create(
+        session_id="test-session", session_name="t",
+        channel_id="C1", thread_ts="1.0", mode=SessionMode.HOOK,
+    )
+    daemon._trusted_sessions.add("test-session")
     app = create_http_app(daemon)
 
     from aiohttp.test_utils import TestServer, TestClient

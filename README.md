@@ -134,7 +134,7 @@ Open a new shell (or `source ~/.bashrc` / `~/.zshrc`) so `~/.local/bin` is on `P
 | `@bot resume <UUID>` | Channel | Bind TUI session to thread |
 | `resume <UUID>` | DM | Bind TUI session to thread |
 | `!stop` | Thread | Halt running session |
-| `yolo off` | Thread | Disable YOLO/Trust mode |
+| `yolo off` | Thread | Revoke session-scoped YOLO auto-approval |
 | `sync off` / `sync on` | Thread | Mute/unmute TUI→Slack sync |
 
 ## Updating
@@ -148,9 +148,8 @@ After pulling a new version of this repo, three layers need to catch up. Run the
 # 2. Refresh the plugin cache from the local marketplace
 claude plugins update slack-bridge@qianheng-plugins
 
-# 3. Re-run init — required to re-register the PermissionRequest hook
-#    (see issue #14, upstream anthropics/claude-code#27398); also picks
-#    up any new hook wiring or config defaults
+# 3. Re-run init to pick up new launcher paths / default config
+#    changes (also cleans up hook entries left by older versions)
 .venv/bin/claude-slack-bridge init
 
 # 4. Restart the daemon to pick up new daemon code

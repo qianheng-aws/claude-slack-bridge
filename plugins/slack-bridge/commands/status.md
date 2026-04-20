@@ -17,7 +17,6 @@ curl -s http://127.0.0.1:7778/sessions | python3 -c "
 import sys, json
 from datetime import datetime
 data = json.load(sys.stdin)
-print(f'YOLO mode: {\"🟢 ON\" if data[\"yolo\"] else \"⚪ OFF\"}')
 sessions = data['sessions']
 process = [s for s in sessions if s['mode'] == 'process']
 hook = [s for s in sessions if s['mode'] == 'hook']

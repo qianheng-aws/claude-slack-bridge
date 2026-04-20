@@ -46,8 +46,8 @@ def test_build_approval_blocks_with_bash() -> None:
     buttons = actions[0]["elements"]
     assert len(buttons) == 4
     assert buttons[0]["action_id"] == "approve_tool"
-    assert buttons[1]["action_id"] == "trust_session"
-    assert buttons[2]["action_id"] == "yolo_mode"
+    assert buttons[1]["action_id"] == "trust_tool"
+    assert buttons[2]["action_id"] == "yolo_session"
     assert buttons[3]["action_id"] == "reject_tool"
     assert buttons[0]["value"] == "req-1"
 

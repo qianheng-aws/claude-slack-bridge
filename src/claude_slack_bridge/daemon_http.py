@@ -165,7 +165,7 @@ def create_http_app(daemon) -> web.Application:
                 if cp.init_at:
                     info["init_duration_ms"] = int((cp.init_at - cp.started_at) * 1000)
             result.append(info)
-        return web.json_response({"yolo": daemon._yolo_mode, "sessions": result})
+        return web.json_response({"sessions": result})
 
     @routes.post("/sessions/bind")
     async def bind_session(req: web.Request) -> web.Response:
@@ -254,11 +254,7 @@ def create_http_app(daemon) -> web.Application:
             tool_name = payload.get("tool_name", "")
             tool_input = payload.get("tool_input", {})
 
-            # Fast-path: YOLO mode — approve everything
-            if daemon._yolo_mode:
-                return web.Response(text="approved")
-
-            # Fast-path: trusted session
+            # Fast-path: YOLO / trusted session (per-session auto-allow)
             if session and session.session_id in daemon._trusted_sessions:
                 return web.Response(text="approved")
 
@@ -309,7 +305,13 @@ def create_http_app(daemon) -> web.Application:
             )
 
             # Block until user clicks Approve/Reject or timeout
-            state = daemon._approval_mgr.create(request_id)
+            state = daemon._approval_mgr.create(
+                request_id,
+                tool_name=tool_name,
+                tool_input=tool_input,
+                cwd=payload.get("cwd", "") or session.cwd,
+                session_id=session.session_id,
+            )
             result = await state.wait(
                 timeout=daemon._config.approval_timeout_secs
             )
@@ -578,13 +580,9 @@ def create_http_app(daemon) -> web.Application:
             session_key[:12] if session_key else "?", tool_name,
         )
 
-        # Fast-path: YOLO mode
-        if daemon._yolo_mode:
-            return web.Response(text="approved")
-
         session = daemon._session_mgr.get(session_key)
 
-        # Fast-path: trusted session
+        # Fast-path: YOLO / trusted session
         if session and session.session_id in daemon._trusted_sessions:
             return web.Response(text="approved")
 
@@ -635,7 +633,13 @@ def create_http_app(daemon) -> web.Application:
         daemon._pending_approval_msgs[session.session_id] = approval_msg_ts
 
         # Block until Slack button click or timeout
-        state = daemon._approval_mgr.create(request_id)
+        state = daemon._approval_mgr.create(
+            request_id,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            cwd=cwd or session.cwd,
+            session_id=session.session_id,
+        )
         result = await state.wait(
             timeout=daemon._config.approval_timeout_secs
         )

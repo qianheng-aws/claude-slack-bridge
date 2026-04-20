@@ -195,9 +195,8 @@ class EventsMixin:
                 await self._slack.post_text(channel_id, "_No running process to stop._", thread_ts)
             return
         if lower == "yolo off":
-            self._yolo_mode = False
             self._trusted_sessions.discard(session.session_id)
-            await self._slack.post_text(channel_id, "\U0001f512 YOLO/Trust mode disabled", thread_ts)
+            await self._slack.post_text(channel_id, "\U0001f512 YOLO disabled for this session", thread_ts)
             return
         if lower == "sync off":
             self.mute_session(session.session_id)
@@ -280,28 +279,50 @@ class EventsMixin:
                             )
                         except Exception:
                             logger.debug("Failed to update options message", exc_info=True)
-        elif action_id == "trust_session":
-            self._trusted_sessions.add(value)
-            for req_id, state in list(self._approval_mgr._pending.items()):
-                session = self._session_mgr.get(value)
-                if session:
-                    state.resolve("approved")
-            if self._slack and channel_id and msg_ts:
-                blocks = build_approval_resolved_blocks("Session", "trusted", value)
+        elif action_id == "trust_tool":
+            # "Trust" = write settings.json permissions.allow so CC
+            # itself auto-approves future invocations of this tool
+            # (matches the TUI's "Yes, don't ask again" option).
+            state = self._approval_mgr.get(value)
+            rule = "?"
+            settings_path = None
+            if state:
+                from claude_slack_bridge.permissions import (
+                    add_allow_rule, build_allow_rule,
+                )
+                rule = build_allow_rule(state.tool_name, state.tool_input)
                 try:
-                    await self._slack.update_blocks(channel_id, msg_ts, blocks, text="\U0001f91d Trusted")
-                except Exception:
-                    logger.debug("Failed to update trust message", exc_info=True)
-        elif action_id == "yolo_mode":
-            self._yolo_mode = True
-            for state in list(self._approval_mgr._pending.values()):
+                    settings_path, _added = add_allow_rule(state.cwd, rule)
+                except OSError:
+                    logger.warning("Failed to write permissions.allow", exc_info=True)
                 state.resolve("approved")
             if self._slack and channel_id and msg_ts:
-                blocks = build_approval_resolved_blocks("Global", "approved", value)
+                blocks = build_approval_resolved_blocks("Rule", "trusted", rule)
                 try:
-                    await self._slack.update_blocks(channel_id, msg_ts, blocks, text="\u2705 YOLO enabled")
+                    scope = "project" if settings_path and ".claude/settings.json" in str(settings_path) and str(settings_path).startswith(state.cwd) else "user"
+                    await self._slack.update_blocks(
+                        channel_id, msg_ts, blocks,
+                        text=f"\U0001f91d Trusted `{rule}` ({scope} scope)",
+                    )
                 except Exception:
-                    logger.debug("Failed to update YOLO message", exc_info=True)
+                    logger.debug("Failed to update trust message", exc_info=True)
+        elif action_id == "yolo_session":
+            # "YOLO" = auto-approve every subsequent tool in this
+            # session until the daemon restarts. This is what the
+            # previous "Trust Session" button did.
+            self._trusted_sessions.add(value)
+            for state in list(self._approval_mgr._pending.values()):
+                if state.session_id == value:
+                    state.resolve("approved")
+            if self._slack and channel_id and msg_ts:
+                blocks = build_approval_resolved_blocks("Session", "yolo", value)
+                try:
+                    await self._slack.update_blocks(
+                        channel_id, msg_ts, blocks,
+                        text="\U0001f3bd YOLO — auto-approving this session",
+                    )
+                except Exception:
+                    logger.debug("Failed to update yolo message", exc_info=True)
         elif action_id == "takeover_session":
             session = self._session_mgr.get(value)
             if session:

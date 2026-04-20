@@ -7,8 +7,19 @@ logger = logging.getLogger(__name__)
 
 
 class ApprovalState:
-    def __init__(self, request_id: str) -> None:
+    def __init__(
+        self,
+        request_id: str,
+        tool_name: str = "",
+        tool_input: dict | None = None,
+        cwd: str = "",
+        session_id: str = "",
+    ) -> None:
         self.request_id = request_id
+        self.tool_name = tool_name
+        self.tool_input = tool_input or {}
+        self.cwd = cwd
+        self.session_id = session_id
         self.status: str = "pending"  # pending | approved | rejected | timed_out
         self._event = asyncio.Event()
         self._resolved = False
@@ -35,8 +46,21 @@ class ApprovalManager:
     def __init__(self) -> None:
         self._pending: dict[str, ApprovalState] = {}
 
-    def create(self, request_id: str) -> ApprovalState:
-        state = ApprovalState(request_id)
+    def create(
+        self,
+        request_id: str,
+        tool_name: str = "",
+        tool_input: dict | None = None,
+        cwd: str = "",
+        session_id: str = "",
+    ) -> ApprovalState:
+        state = ApprovalState(
+            request_id,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            cwd=cwd,
+            session_id=session_id,
+        )
         self._pending[request_id] = state
         return state
 
