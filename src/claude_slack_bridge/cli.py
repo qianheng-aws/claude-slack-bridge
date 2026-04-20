@@ -55,15 +55,12 @@ def init() -> None:
 
     config_file = config_dir / "config.json"
     if not config_file.exists():
+        # Minimal set of fields users are most likely to tweak; the rest
+        # fall back to defaults defined in BridgeConfig.
         default_cfg = {
-            "daemon_port": 7778,
-            "default_channel": "claude-code",
-            "approval_timeout_secs": 300,
             "auto_approve_tools": ["Read", "Glob", "Grep"],
-            "require_approval": True,
-            "truncate_chars": 3000,
-            "session_archive_after_secs": 86400,
             "log_level": "INFO",
+            "claude_args": [],
         }
         config_file.write_text(json.dumps(default_cfg, indent=2))
         click.echo(f"Config saved to {config_file}")

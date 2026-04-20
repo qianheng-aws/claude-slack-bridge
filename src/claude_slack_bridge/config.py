@@ -14,17 +14,12 @@ _DEFAULT_CONFIG_DIR = Path.home() / ".claude" / "slack-bridge"
 class BridgeConfig:
     config_dir: Path = _DEFAULT_CONFIG_DIR
     daemon_port: int = 7778
-    default_channel: str = "claude-code"
     approval_timeout_secs: int = 300
     auto_approve_tools: list[str] = field(default_factory=lambda: ["Read", "Glob", "Grep"])
-    require_approval: bool = True
-    truncate_chars: int = 3000
     session_archive_after_secs: int = 86400
     log_level: str = "INFO"
     max_concurrent_sessions: int = 3
     process_idle_timeout_secs: int = 600  # kill idle --print process after 10min
-    stream_throttle_ms: int = 1000
-    hook_heartbeat_timeout_secs: int = 300
     claude_args: list[str] = field(default_factory=list)
     work_dir: str = ""  # cwd for claude processes; empty = home dir
     slack_app_token: str = ""
@@ -82,17 +77,12 @@ def load_config(config_dir: Path | None = None) -> BridgeConfig:
     return BridgeConfig(
         config_dir=cdir,
         daemon_port=file_data.get("daemon_port", 7778),
-        default_channel=file_data.get("default_channel", "claude-code"),
         approval_timeout_secs=file_data.get("approval_timeout_secs", 300),
         auto_approve_tools=file_data.get("auto_approve_tools", ["Read", "Glob", "Grep"]),
-        require_approval=file_data.get("require_approval", True),
-        truncate_chars=file_data.get("truncate_chars", 3000),
         session_archive_after_secs=file_data.get("session_archive_after_secs", 86400),
         log_level=file_data.get("log_level", "INFO"),
         max_concurrent_sessions=file_data.get("max_concurrent_sessions", 3),
         process_idle_timeout_secs=file_data.get("process_idle_timeout_secs", 600),
-        stream_throttle_ms=file_data.get("stream_throttle_ms", 1000),
-        hook_heartbeat_timeout_secs=file_data.get("hook_heartbeat_timeout_secs", 300),
         claude_args=file_data.get("claude_args", []),
         work_dir=file_data.get("work_dir", str(Path.home())),
         slack_app_token=app_token,

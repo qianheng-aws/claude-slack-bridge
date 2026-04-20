@@ -9,25 +9,21 @@ from claude_slack_bridge.config import BridgeConfig, load_config
 def test_load_default_config_when_no_file(tmp_config_dir: Path) -> None:
     cfg = load_config(config_dir=tmp_config_dir)
     assert cfg.daemon_port == 7778
-    assert cfg.default_channel == "claude-code"
     assert cfg.approval_timeout_secs == 300
     assert cfg.auto_approve_tools == ["Read", "Glob", "Grep"]
-    assert cfg.require_approval is True
-    assert cfg.truncate_chars == 3000
     assert cfg.log_level == "INFO"
+    assert cfg.claude_args == []
 
 
 def test_load_config_from_file(tmp_config_dir: Path) -> None:
     config_file = tmp_config_dir / "config.json"
     config_file.write_text(json.dumps({
         "daemon_port": 9999,
-        "default_channel": "my-channel",
-        "require_approval": False,
+        "log_level": "DEBUG",
     }))
     cfg = load_config(config_dir=tmp_config_dir)
     assert cfg.daemon_port == 9999
-    assert cfg.default_channel == "my-channel"
-    assert cfg.require_approval is False
+    assert cfg.log_level == "DEBUG"
     # Defaults still apply for unset fields
     assert cfg.approval_timeout_secs == 300
 
