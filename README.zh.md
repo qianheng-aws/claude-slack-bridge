@@ -191,7 +191,7 @@ claude-slack-bridge restart -d
 
 ## 开机自启（systemd）
 
-通过 systemd 让守护进程在机器重启后自动拉起：
+通过 systemd 让守护进程在机器重启后自动拉起。先跑 `claude-slack-bridge init` —— 下面的 service 指向 `$HOME/.local/bin/claude-slack-bridge`，这是 init 在 repo venv 上建的软链，之后升级不需要再改这个 service：
 
 ```bash
 sudo tee /etc/systemd/system/claude-slack-bridge.service << EOF
@@ -203,12 +203,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$(whoami)
-ExecStart=$(which claude-slack-bridge) start
+ExecStart=$HOME/.local/bin/claude-slack-bridge start
 Restart=always
 RestartSec=10
 WorkingDirectory=$HOME
 Environment=HOME=$HOME
-Environment=PATH=$(dirname $(which claude-slack-bridge)):$HOME/.local/bin:/usr/local/bin:/usr/bin
+Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin
 
 [Install]
 WantedBy=multi-user.target

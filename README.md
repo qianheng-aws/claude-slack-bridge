@@ -192,7 +192,7 @@ Finally, **restart the Claude Code TUI** so it re-reads the plugin's `hooks.json
 
 ## Auto-start with systemd
 
-To keep the daemon running across machine reboots:
+To keep the daemon running across machine reboots. Run `claude-slack-bridge init` first — the service points at `$HOME/.local/bin/claude-slack-bridge`, a symlink init creates into the repo's venv, so upgrades don't need edits here:
 
 ```bash
 sudo tee /etc/systemd/system/claude-slack-bridge.service << EOF
@@ -204,12 +204,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$(whoami)
-ExecStart=$(which claude-slack-bridge) start
+ExecStart=$HOME/.local/bin/claude-slack-bridge start
 Restart=always
 RestartSec=10
 WorkingDirectory=$HOME
 Environment=HOME=$HOME
-Environment=PATH=$(dirname $(which claude-slack-bridge)):$HOME/.local/bin:/usr/local/bin:/usr/bin
+Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin
 
 [Install]
 WantedBy=multi-user.target
