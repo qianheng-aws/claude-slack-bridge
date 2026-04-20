@@ -24,3 +24,7 @@ daemon.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code per-project settings — user-specific, written by the
+# TUI's "Yes, don't ask again" / our Slack Trust button.
+.claude/
