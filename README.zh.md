@@ -159,8 +159,6 @@ claude-slack-bridge restart -d
 
 最后 **重启 Claude Code TUI**，让它重新读取插件的 `hooks.json` 和 `~/.claude/settings.json` 中新增的 hook 项。
 
-> `claude plugins update` 从你 marketplace 指向的路径读取 —— 如果你是用 `claude plugins marketplace add /path/to/this/repo` 装的，本地 `git pull` 就够了，不需要先 push 到 GitHub。
-
 ## 功能特性
 
 - **双向同步** —— Slack 消息通过 tmux 转发到 TUI，TUI 响应自动同步回 Slack

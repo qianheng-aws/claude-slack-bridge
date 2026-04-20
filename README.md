@@ -159,8 +159,6 @@ claude-slack-bridge restart -d
 
 Finally, **restart the Claude Code TUI** so it re-reads the plugin's `hooks.json` and any new hook entries in `~/.claude/settings.json`.
 
-> `claude plugins update` reads from whatever path your marketplace points to — if you installed via `claude plugins marketplace add /path/to/this/repo`, a local `git pull` is enough. No need to push to GitHub first.
-
 ## Features
 
 - **Bidirectional sync** — Slack messages forward into TUI via tmux, TUI responses sync back to Slack
