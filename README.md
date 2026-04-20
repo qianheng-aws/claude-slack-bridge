@@ -137,6 +137,30 @@ Open a new shell (or `source ~/.bashrc` / `~/.zshrc`) so `~/.local/bin` is on `P
 | `yolo off` | Thread | Disable YOLO/Trust mode |
 | `sync off` / `sync on` | Thread | Mute/unmute TUI→Slack sync |
 
+## Updating
+
+After pulling a new version of this repo, three layers need to catch up. Run these from the repo root:
+
+```bash
+# 1. Update Python dependencies (only needed if pyproject.toml changed)
+.venv/bin/pip install -e .
+
+# 2. Refresh the plugin cache from the local marketplace
+claude plugins update slack-bridge@qianheng-plugins
+
+# 3. Re-run init — required to re-register the PermissionRequest hook
+#    (see issue #14, upstream anthropics/claude-code#27398); also picks
+#    up any new hook wiring or config defaults
+.venv/bin/claude-slack-bridge init
+
+# 4. Restart the daemon to pick up new daemon code
+claude-slack-bridge restart -d
+```
+
+Finally, **restart the Claude Code TUI** so it re-reads the plugin's `hooks.json` and any new hook entries in `~/.claude/settings.json`.
+
+> `claude plugins update` reads from whatever path your marketplace points to — if you installed via `claude plugins marketplace add /path/to/this/repo`, a local `git pull` is enough. No need to push to GitHub first.
+
 ## Features
 
 - **Bidirectional sync** — Slack messages forward into TUI via tmux, TUI responses sync back to Slack

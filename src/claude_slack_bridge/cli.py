@@ -228,22 +228,58 @@ def _daemonize() -> None:
 @main.command()
 def stop() -> None:
     """Stop the bridge daemon."""
+    _stop_daemon()
+
+
+def _stop_daemon() -> bool:
+    """Send SIGTERM to a running daemon and wait briefly for it to exit.
+
+    Returns True if we stopped a running daemon (or it was already gone).
+    """
     import signal
-    import urllib.request
-    import urllib.error
+    import time as _time
 
     cfg = load_config()
     pid_file = cfg.config_dir / "daemon.pid"
-    if pid_file.is_file():
-        pid = int(pid_file.read_text().strip())
-        try:
-            os.kill(pid, signal.SIGTERM)
-            click.echo(f"Sent SIGTERM to daemon (PID {pid})")
-        except ProcessLookupError:
-            click.echo("Daemon not running (stale PID file)")
-            pid_file.unlink()
-    else:
+    if not pid_file.is_file():
         click.echo("No PID file found. Daemon may not be running.")
+        return True
+    try:
+        pid = int(pid_file.read_text().strip())
+    except ValueError:
+        pid_file.unlink(missing_ok=True)
+        return True
+    try:
+        os.kill(pid, signal.SIGTERM)
+        click.echo(f"Sent SIGTERM to daemon (PID {pid})")
+    except ProcessLookupError:
+        click.echo("Daemon not running (stale PID file)")
+        pid_file.unlink(missing_ok=True)
+        return True
+    # Wait up to 5s for the process to exit.
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+            _time.sleep(0.1)
+        except ProcessLookupError:
+            return True
+    click.echo(f"Daemon (PID {pid}) did not exit within 5s.", err=True)
+    return False
+
+
+@main.command()
+@click.option("-d", "--daemonize", is_flag=True, help="Run in background")
+def restart(daemonize: bool) -> None:
+    """Stop the daemon (if running) and start a fresh one."""
+    _stop_daemon()
+    cfg = load_config()
+    if not cfg.slack_app_token or not cfg.slack_bot_token:
+        click.echo("Slack tokens not configured. Run 'claude-slack-bridge init' first.", err=True)
+        raise SystemExit(1)
+    if daemonize:
+        _daemonize()
+    from claude_slack_bridge.daemon import Daemon
+    asyncio.run(Daemon(cfg).start())
 
 
 @main.command()

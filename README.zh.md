@@ -137,6 +137,30 @@ claude plugins install slack-bridge@qianheng-plugins
 | `yolo off` | 线程 | 关闭 YOLO/Trust 模式 |
 | `sync off` / `sync on` | 线程 | 静音/恢复 TUI→Slack 同步 |
 
+## 更新
+
+拉取新版本后，以下三层需要一起更新。从仓库根目录执行：
+
+```bash
+# 1. 如果 pyproject.toml 有变动，升级 Python 依赖
+.venv/bin/pip install -e .
+
+# 2. 从本地 marketplace 刷新 plugin cache
+claude plugins update slack-bridge@qianheng-plugins
+
+# 3. 重跑 init —— 用来重新注册 PermissionRequest hook
+#    （见 issue #14，上游 anthropics/claude-code#27398），
+#    同时承接新版本的 hook 布线或 config 默认值
+.venv/bin/claude-slack-bridge init
+
+# 4. 重启 daemon 加载新的后端代码
+claude-slack-bridge restart -d
+```
+
+最后 **重启 Claude Code TUI**，让它重新读取插件的 `hooks.json` 和 `~/.claude/settings.json` 中新增的 hook 项。
+
+> `claude plugins update` 从你 marketplace 指向的路径读取 —— 如果你是用 `claude plugins marketplace add /path/to/this/repo` 装的，本地 `git pull` 就够了，不需要先 push 到 GitHub。
+
 ## 功能特性
 
 - **双向同步** —— Slack 消息通过 tmux 转发到 TUI，TUI 响应自动同步回 Slack
