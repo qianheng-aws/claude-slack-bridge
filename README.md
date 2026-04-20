@@ -108,20 +108,6 @@ Then in Claude Code TUI:
 
 </details>
 
-<details>
-<summary><b>Manual Setup (without plugin)</b></summary>
-
-```bash
-git clone https://github.com/qianheng-aws/claude-slack-bridge.git
-cd claude-slack-bridge && python3 -m venv .venv && .venv/bin/pip install -e .
-.venv/bin/claude-slack-bridge init
-# Edit ~/.claude/slack-bridge/.env:
-#   SLACK_BOT_TOKEN=xoxb-...
-#   SLACK_APP_TOKEN=xapp-...
-```
-
-</details>
-
 ## Commands
 
 ### Plugin Commands (in TUI)

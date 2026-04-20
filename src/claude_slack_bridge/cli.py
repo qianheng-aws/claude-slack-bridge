@@ -64,58 +64,11 @@ def init() -> None:
         config_file.write_text(json.dumps(default_cfg, indent=2))
         click.echo(f"Config saved to {config_file}")
 
-    _register_hooks(config_dir)
-    click.echo("Setup complete! Run 'claude-slack-bridge start' to launch the daemon.")
-
-
-def _register_hooks(config_dir: Path) -> None:
-    """Register hooks in ~/.claude/settings.json.
-
-    Skips registration if the slack-bridge plugin is installed (its
-    hooks.json already provides all necessary hooks).
-    """
-    # Check if plugin hooks already handle this
-    plugin_hooks = config_dir.parent / "plugins" / "cache" / "slack-bridge"
-    if plugin_hooks.exists():
-        click.echo("Hooks already provided by slack-bridge plugin — skipping settings.json registration.")
-        return
-
-    settings_path = Path.home() / ".claude" / "settings.json"
-    settings: dict = {}
-    if settings_path.is_file():
-        settings = json.loads(settings_path.read_text())
-
-    hooks_config = {
-        "PostToolUse": [{
-            "matcher": "",
-            "hooks": [{
-                "type": "command",
-                "command": "claude-slack-bridge hook post-tool-use",
-            }],
-        }],
-        "UserPromptSubmit": [{
-            "matcher": "",
-            "hooks": [{
-                "type": "command",
-                "command": "claude-slack-bridge hook user-prompt",
-            }],
-        }],
-        "Stop": [{
-            "matcher": "",
-            "hooks": [{
-                "type": "command",
-                "command": "claude-slack-bridge hook stop",
-            }],
-        }],
-    }
-
-    existing_hooks = settings.get("hooks", {})
-    existing_hooks.update(hooks_config)
-    settings["hooks"] = existing_hooks
-
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(settings, indent=2))
-    click.echo(f"Hooks registered in {settings_path}")
+    click.echo(
+        "Setup complete! Install the Claude Code plugin to wire up hooks:\n"
+        "  claude plugins install slack-bridge@qianheng-plugins\n"
+        "Then run 'claude-slack-bridge start' to launch the daemon."
+    )
 
 
 @main.command()
@@ -195,36 +148,6 @@ def status() -> None:
             click.echo("No active sessions.")
     except (urllib.error.URLError, OSError):
         click.echo("Daemon is not running.")
-
-
-@main.group()
-def hook() -> None:
-    """Hook entry points (called by Claude Code, not users)."""
-    pass
-
-
-@hook.command("pre-tool-use")
-def hook_pre_tool_use() -> None:
-    from claude_slack_bridge.hooks import run_hook
-    sys.exit(run_hook("pre-tool-use"))
-
-
-@hook.command("post-tool-use")
-def hook_post_tool_use() -> None:
-    from claude_slack_bridge.hooks import run_hook
-    sys.exit(run_hook("post-tool-use"))
-
-
-@hook.command("user-prompt")
-def hook_user_prompt() -> None:
-    from claude_slack_bridge.hooks import run_hook
-    sys.exit(run_hook("user-prompt"))
-
-
-@hook.command("stop")
-def hook_stop() -> None:
-    from claude_slack_bridge.hooks import run_hook
-    sys.exit(run_hook("stop"))
 
 
 if __name__ == "__main__":
