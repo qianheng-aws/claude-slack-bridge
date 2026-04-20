@@ -92,7 +92,7 @@ def init() -> None:
         click.echo(f"Config saved to {config_file}")
 
     _install_launcher()
-    _install_permission_request_hook()
+    _remove_legacy_permission_hook()
 
     click.echo(
         "\nSetup complete! Install the Claude Code plugin to wire up hooks:\n"
@@ -101,89 +101,39 @@ def init() -> None:
     )
 
 
-# Marker for the PermissionRequest hook we inject into settings.json.
-# The plugin's hooks.json ships PermissionRequest too, but upstream CC
-# silently drops plugin-scoped hooks (see issue #14 / anthropics/claude-code#27398),
-# so we register it directly in settings.json as well. Safe to remove
-# once that upstream bug is fixed.
-_PERMISSION_HOOK_MARKER = "claude-slack-bridge:PermissionRequest"
+# Older versions of init injected a `PermissionRequest` block into
+# ~/.claude/settings.json (marker below) as a workaround for a
+# misread CC behavior — plugin-scoped PermissionRequest hooks do fire,
+# we just had the matcher wrong. This cleanup removes the legacy
+# block on upgrade so users don't end up with duplicate handlers.
+_LEGACY_PERMISSION_HOOK_MARKER = "claude-slack-bridge:PermissionRequest"
 
 
-def _find_plugin_hook_script() -> Path | None:
-    """Locate the plugin's hook binary in the Claude Code plugin cache.
-
-    Prefer the `installPath` recorded by Claude Code in
-    `~/.claude/plugins/installed_plugins.json` — that's the cache dir
-    CC actually loads. Fall back to the newest-mtime dir, then to
-    the lexicographically largest one (multiple updates in the same
-    second can share an mtime, making `max` non-deterministic).
-    """
-    installed_json = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
-    if installed_json.is_file():
-        try:
-            data = json.loads(installed_json.read_text())
-            entries = data.get("plugins", {}).get("slack-bridge@qianheng-plugins", [])
-            for entry in entries:
-                script = Path(entry.get("installPath", "")) / "bin" / "claude-slack-bridge-hook"
-                if script.is_file():
-                    return script
-        except (OSError, json.JSONDecodeError):
-            pass
-
-    cache = Path.home() / ".claude" / "plugins" / "cache" / "qianheng-plugins" / "slack-bridge"
-    if not cache.is_dir():
-        return None
-    versions = [v for v in cache.iterdir() if v.is_dir()]
-    if not versions:
-        return None
-    latest = max(versions, key=lambda v: (v.stat().st_mtime, v.name))
-    script = latest / "bin" / "claude-slack-bridge-hook"
-    return script if script.is_file() else None
-
-
-def _install_permission_request_hook() -> None:
-    """Register PermissionRequest in ~/.claude/settings.json.
-
-    Workaround for upstream bug: plugin-scoped PermissionRequest hooks
-    do not fire (see tracker issue #14). Registering directly in
-    settings.json bypasses the --setting-sources exclusion.
-    """
-    script = _find_plugin_hook_script()
-    if not script:
-        click.echo(
-            "Claude Code plugin not installed yet — skipping PermissionRequest registration. "
-            "Run `claude plugins install slack-bridge@qianheng-plugins` and re-run init."
-        )
-        return
-
+def _remove_legacy_permission_hook() -> None:
     settings_path = Path.home() / ".claude" / "settings.json"
-    settings: dict = {}
-    if settings_path.is_file():
-        try:
-            settings = json.loads(settings_path.read_text())
-        except json.JSONDecodeError:
-            click.echo(f"Cannot parse {settings_path}; skipping PermissionRequest registration.")
-            return
-
-    hooks = settings.setdefault("hooks", {})
-    entries = hooks.get("PermissionRequest", [])
-
-    # Idempotent: replace any existing marker-tagged block
-    entries = [e for e in entries if e.get("_marker") != _PERMISSION_HOOK_MARKER]
-    entries.append({
-        "_marker": _PERMISSION_HOOK_MARKER,
-        "matcher": "",
-        "hooks": [{
-            "type": "command",
-            "command": f"{script} PermissionRequest",
-            "timeout": 86400,  # seconds — ~24h, effectively wait forever
-        }],
-    })
-    hooks["PermissionRequest"] = entries
-
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    if not settings_path.is_file():
+        return
+    try:
+        settings = json.loads(settings_path.read_text())
+    except json.JSONDecodeError:
+        return
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return
+    entries = hooks.get("PermissionRequest")
+    if not isinstance(entries, list):
+        return
+    kept = [e for e in entries if e.get("_marker") != _LEGACY_PERMISSION_HOOK_MARKER]
+    if len(kept) == len(entries):
+        return
+    if kept:
+        hooks["PermissionRequest"] = kept
+    else:
+        hooks.pop("PermissionRequest", None)
+        if not hooks:
+            settings.pop("hooks", None)
     settings_path.write_text(json.dumps(settings, indent=2))
-    click.echo(f"Registered PermissionRequest hook in {settings_path}")
+    click.echo(f"Removed legacy PermissionRequest workaround from {settings_path}")
 
 
 def _install_launcher() -> None:
