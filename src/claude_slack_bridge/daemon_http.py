@@ -235,7 +235,8 @@ def create_http_app(daemon) -> web.Application:
             # Auto-bind session to a Slack DM if not yet registered
             if not session:
                 session = await daemon._auto_bind_session(
-                    session_key, payload.get("cwd", "")
+                    session_key, payload.get("cwd", ""),
+                    tmux_pane_id=payload.get("tmux_pane_id", ""),
                 )
                 if not session:
                     # Cannot reach Slack — fail open so TUI isn't blocked
@@ -290,6 +291,10 @@ def create_http_app(daemon) -> web.Application:
         # TUI hook arrived — update session state
         session.touch()
         session.tui_active = time.time()
+        # Refresh tmux pane binding — handles --resume in a new pane
+        pane_id = payload.get("tmux_pane_id", "")
+        if pane_id and pane_id != session.tmux_pane_id:
+            session.tmux_pane_id = pane_id
         # Promote IDLE → HOOK when TUI hooks start arriving
         if session.mode == SessionMode.IDLE.value:
             daemon._session_mgr.set_mode(session.session_id, SessionMode.HOOK)
@@ -410,14 +415,17 @@ def create_http_app(daemon) -> web.Application:
         payload = await req.json()
         session_key = payload.get("session_key", "")
         cwd = payload.get("cwd", "")
+        pane_id = payload.get("tmux_pane_id", "")
 
         session = daemon._session_mgr.get(session_key)
         if not session:
-            session = await daemon._auto_bind_session(session_key, cwd)
+            session = await daemon._auto_bind_session(session_key, cwd, tmux_pane_id=pane_id)
         if session:
             session.touch()
             session.tui_active = time.time()
             session.cwd = cwd or session.cwd
+            if pane_id:
+                session.tmux_pane_id = pane_id
             daemon._session_mgr.set_mode(session_key, SessionMode.HOOK)
             if daemon._slack and session.channel_id and session.session_id not in daemon._tui_sync_muted:
                 await daemon._slack.post_text(
@@ -436,6 +444,9 @@ def create_http_app(daemon) -> web.Application:
         if session:
             session.touch()
             session.tui_active = 0
+            # Pane is about to close — clear so Slack→TUI forwarding falls
+            # back to cwd/--resume instead of send-keys to a stale pane.
+            session.tmux_pane_id = ""
             daemon._file_watcher.unwatch(session_key)
             if daemon._slack and session.channel_id and session.session_id not in daemon._tui_sync_muted:
                 await daemon._slack.post_text(
@@ -535,12 +546,18 @@ def create_http_app(daemon) -> web.Application:
 
         # Auto-bind if needed
         if not session:
-            session = await daemon._auto_bind_session(session_key, cwd)
+            session = await daemon._auto_bind_session(
+                session_key, cwd,
+                tmux_pane_id=payload.get("tmux_pane_id", ""),
+            )
             if not session:
                 return web.Response(text="approved")
 
         session.touch()
         session.tui_active = time.time()
+        pane_id = payload.get("tmux_pane_id", "")
+        if pane_id and pane_id != session.tmux_pane_id:
+            session.tmux_pane_id = pane_id
 
         # Thread status: waiting for approval
         await daemon._slack.set_thread_status(

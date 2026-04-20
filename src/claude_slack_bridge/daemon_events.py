@@ -222,7 +222,9 @@ class EventsMixin:
         elif session.origin == "tui":
             # TUI-originated session: try tmux send-keys first
             cwd = session.cwd or self._config.work_dir
-            sent = await send_message_to_session(cwd, text)
+            sent = await send_message_to_session(
+                text, pane_id=session.tmux_pane_id, cwd=cwd,
+            )
             if sent:
                 if len(self._forwarded_prompts) >= 50:
                     self._forwarded_prompts.clear()

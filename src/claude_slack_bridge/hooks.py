@@ -16,6 +16,7 @@ def _build_hook_payload(event_type: str, stdin_json: dict) -> dict:
         "event": event_type,
         "session_key": session_key,
         "cwd": stdin_json.get("cwd", ""),
+        "tmux_pane_id": os.environ.get("TMUX_PANE", ""),
     }
 
     if event_type in ("pre-tool-use", "post-tool-use", "permission-request"):

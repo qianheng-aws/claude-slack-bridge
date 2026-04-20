@@ -204,7 +204,7 @@ class Daemon(StreamMixin, EventsMixin):
             return session
         return None
 
-    async def _auto_bind_session(self, session_key: str, cwd: str) -> Session | None:
+    async def _auto_bind_session(self, session_key: str, cwd: str, tmux_pane_id: str = "") -> Session | None:
         """Auto-bind a TUI session to a Slack DM thread for the approval flow.
 
         When a PreToolUse hook arrives from a TUI session that has no Slack
@@ -238,6 +238,7 @@ class Daemon(StreamMixin, EventsMixin):
             )
             session.cwd = cwd
             session.origin = "tui"
+            session.tmux_pane_id = tmux_pane_id
             self._tui_sync_muted.add(session_key)
             logger.info("Auto-bound TUI session %s to DM %s (muted by default)", session_key, dm_channel)
             return session
