@@ -11,6 +11,10 @@ import click
 from claude_slack_bridge.config import BridgeConfig, load_config
 
 
+_RC_MARKER = "# claude-slack-bridge"
+_LOCAL_BIN = Path.home() / ".local" / "bin"
+
+
 @click.group()
 def main() -> None:
     """Claude Slack Bridge — bridge Claude Code sessions to Slack."""
@@ -19,7 +23,7 @@ def main() -> None:
 
 @main.command()
 def init() -> None:
-    """Interactive setup: configure tokens and register hooks."""
+    """Interactive setup: tokens, config, PATH symlink."""
     config_dir = Path.home() / ".claude" / "slack-bridge"
     config_dir.mkdir(parents=True, exist_ok=True)
 
@@ -64,11 +68,62 @@ def init() -> None:
         config_file.write_text(json.dumps(default_cfg, indent=2))
         click.echo(f"Config saved to {config_file}")
 
+    _install_launcher()
+
     click.echo(
-        "Setup complete! Install the Claude Code plugin to wire up hooks:\n"
+        "\nSetup complete! Install the Claude Code plugin to wire up hooks:\n"
         "  claude plugins install slack-bridge@qianheng-plugins\n"
         "Then run 'claude-slack-bridge start' to launch the daemon."
     )
+
+
+def _install_launcher() -> None:
+    """Symlink the venv entry point into ~/.local/bin and ensure PATH."""
+    # sys.argv[0] resolves to the entry point script pip placed in venv/bin.
+    entry = Path(sys.argv[0]).resolve()
+    if not entry.is_file():
+        click.echo(f"Could not locate claude-slack-bridge launcher (looked at {entry}). Skipping symlink.")
+        return
+
+    _LOCAL_BIN.mkdir(parents=True, exist_ok=True)
+    link = _LOCAL_BIN / "claude-slack-bridge"
+    current = link.resolve() if link.is_symlink() or link.exists() else None
+    if link.is_symlink() or link.exists():
+        if current == entry:
+            click.echo(f"Launcher already linked: {link} → {entry}")
+        else:
+            link.unlink()
+            link.symlink_to(entry)
+            click.echo(f"Updated launcher: {link} → {entry}")
+    else:
+        link.symlink_to(entry)
+        click.echo(f"Linked launcher: {link} → {entry}")
+
+    _update_shell_rc()
+
+
+def _update_shell_rc() -> None:
+    """Append `export PATH="$HOME/.local/bin:$PATH"` to common rc files (idempotent)."""
+    path_line = 'export PATH="$HOME/.local/bin:$PATH"'
+    block = f"\n{_RC_MARKER}\n{path_line}\n"
+
+    for rc_name in (".bashrc", ".zshrc"):
+        rc = Path.home() / rc_name
+        if not rc.is_file():
+            continue
+        existing = rc.read_text()
+        if _RC_MARKER in existing:
+            continue
+        with rc.open("a") as fh:
+            fh.write(block)
+        click.echo(f"Added ~/.local/bin to PATH in {rc}")
+
+    # If the user's current shell hasn't sourced the rc yet, warn them.
+    if str(_LOCAL_BIN) not in os.environ.get("PATH", "").split(":"):
+        click.echo(
+            f"Note: ~/.local/bin is not on your current PATH. Restart your shell "
+            f"or run: export PATH=\"{_LOCAL_BIN}:$PATH\""
+        )
 
 
 @main.command()

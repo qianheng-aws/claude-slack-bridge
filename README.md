@@ -76,23 +76,26 @@ Working at your desk? Use TUI as usual. Whenever you want Slack as a mirror — 
 ## Quick Start
 
 ```bash
-# 1. Clone and install
+# 1. Clone and install into an isolated venv
 git clone https://github.com/qianheng-aws/claude-slack-bridge.git
 cd claude-slack-bridge && python3 -m venv .venv && .venv/bin/pip install -e .
 
-# 2. Register as Claude Code plugin
-claude plugins marketplace add /path/to/claude-slack-bridge
+# 2. Register as a Claude Code plugin
+claude plugins marketplace add "$PWD"
 claude plugins install slack-bridge@qianheng-plugins
 
-# 3. Initialize and add your Slack tokens
+# 3. Run init — prompts for Slack tokens, writes config, and symlinks
+#    the daemon CLI into ~/.local/bin (also added to .bashrc / .zshrc)
 .venv/bin/claude-slack-bridge init
-# Edit ~/.claude/slack-bridge/.env with SLACK_BOT_TOKEN and SLACK_APP_TOKEN
 ```
 
-Then in Claude Code TUI:
+Open a new shell (or `source ~/.bashrc` / `~/.zshrc`) so `~/.local/bin` is on `PATH`. Then in Claude Code TUI:
+
 ```
 /slack-bridge:sync-on
 ```
+
+> After init you can run `claude-slack-bridge start` / `status` / `stop` from anywhere — no need to reference `.venv/bin/`.
 
 <details>
 <summary><b>Slack App Setup</b></summary>

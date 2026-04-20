@@ -76,23 +76,26 @@ cd /your/project && claude --resume <session-id>
 ## 快速开始
 
 ```bash
-# 1. 克隆并安装
+# 1. 克隆并安装到独立 venv
 git clone https://github.com/qianheng-aws/claude-slack-bridge.git
 cd claude-slack-bridge && python3 -m venv .venv && .venv/bin/pip install -e .
 
 # 2. 注册为 Claude Code 插件
-claude plugins marketplace add /path/to/claude-slack-bridge
+claude plugins marketplace add "$PWD"
 claude plugins install slack-bridge@qianheng-plugins
 
-# 3. 初始化并添加 Slack token
+# 3. 运行 init —— 输入 Slack token、写配置，并把 daemon CLI 软链
+#    到 ~/.local/bin（同时写入 .bashrc / .zshrc）
 .venv/bin/claude-slack-bridge init
-# 编辑 ~/.claude/slack-bridge/.env 填入 SLACK_BOT_TOKEN 和 SLACK_APP_TOKEN
 ```
 
-然后在 Claude Code TUI 中：
+重开一个 shell（或 `source ~/.bashrc` / `~/.zshrc`）让 `~/.local/bin` 进到 `PATH`，然后在 Claude Code TUI 中：
+
 ```
 /slack-bridge:sync-on
 ```
+
+> init 之后，`claude-slack-bridge start` / `status` / `stop` 可以在任何目录直接调用，不再需要 `.venv/bin/` 前缀。
 
 <details>
 <summary><b>Slack 应用配置</b></summary>
