@@ -496,17 +496,25 @@ def build_user_prompt_blocks(prompt: str) -> list[dict]:
 def build_approval_resolved_blocks(
     tool_name: str,
     decision: str,
-    request_id: str,
+    detail: str,
 ) -> list[dict]:
+    """Replace the approval block with a compact resolved summary.
+
+    `detail` is rendered verbatim (e.g. a rule like `Bash(sudo:*)`
+    for trust, or the tool name for plain approve/reject).
+    """
     if decision == "approved":
         label = "\u2705 Approved"
     elif decision == "trusted":
         label = "\U0001f91d Trusted"
+    elif decision == "yolo":
+        label = "\U0001f3bd YOLO"
     else:
         label = "\U0001f6ab Rejected"
+    text = f"{label} \u2014 `{detail}`" if detail else label
     return [
         {
             "type": "context",
-            "elements": [{"type": "mrkdwn", "text": f"{label} \u2014 *{tool_name}*"}],
+            "elements": [{"type": "mrkdwn", "text": text}],
         },
     ]

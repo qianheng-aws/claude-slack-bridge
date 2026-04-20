@@ -310,23 +310,28 @@ def test_build_options_blocks_exactly_75_chars_no_fallback() -> None:
 
 
 def test_build_approval_resolved_blocks() -> None:
-    # Approved
-    blocks = build_approval_resolved_blocks("Bash", "approved", "req-1")
+    # Approved — detail is the tool name
+    blocks = build_approval_resolved_blocks("Bash", "approved", "Bash")
     text = json.dumps(blocks)
     assert "Approved" in text
     assert "Bash" in text
     assert blocks[0]["type"] == "context"
 
     # Rejected
-    blocks = build_approval_resolved_blocks("Write", "rejected", "req-2")
+    blocks = build_approval_resolved_blocks("Write", "rejected", "Write")
     text = json.dumps(blocks)
     assert "Rejected" in text
     assert "Write" in text
-    assert blocks[0]["type"] == "context"
 
-    # Trusted
-    blocks = build_approval_resolved_blocks("Edit", "trusted", "req-3")
+    # Trusted — detail is the formatted rule
+    blocks = build_approval_resolved_blocks("Rule", "trusted", "Bash(sudo:*)")
     text = json.dumps(blocks)
     assert "Trusted" in text
-    assert "Edit" in text
+    assert "Bash(sudo:*)" in text
+    assert blocks[0]["type"] == "context"
+
+    # Empty detail — label-only, still renders
+    blocks = build_approval_resolved_blocks("Tool", "approved", "")
+    text = json.dumps(blocks)
+    assert "Approved" in text
     assert blocks[0]["type"] == "context"

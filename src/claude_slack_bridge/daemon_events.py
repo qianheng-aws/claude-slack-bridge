@@ -250,17 +250,21 @@ class EventsMixin:
         msg_ts = msg.get("ts", "")
 
         if action_id == "approve_tool":
+            state = self._approval_mgr.get(value)
             self._approval_mgr.resolve(value, "approved")
+            detail = state.tool_name if state else ""
             if self._slack and channel_id and msg_ts:
-                blocks = build_approval_resolved_blocks("Tool", "approved", value)
+                blocks = build_approval_resolved_blocks("Tool", "approved", detail)
                 try:
                     await self._slack.update_blocks(channel_id, msg_ts, blocks, text="\u2705 Approved")
                 except Exception:
                     logger.debug("Failed to update approve message", exc_info=True)
         elif action_id == "reject_tool":
+            state = self._approval_mgr.get(value)
             self._approval_mgr.resolve(value, "rejected")
+            detail = state.tool_name if state else ""
             if self._slack and channel_id and msg_ts:
-                blocks = build_approval_resolved_blocks("Tool", "rejected", value)
+                blocks = build_approval_resolved_blocks("Tool", "rejected", detail)
                 try:
                     await self._slack.update_blocks(channel_id, msg_ts, blocks, text="\U0001f6ab Rejected")
                 except Exception:
@@ -314,7 +318,7 @@ class EventsMixin:
                 if state.session_id == value:
                     state.resolve("approved")
             if self._slack and channel_id and msg_ts:
-                blocks = build_approval_resolved_blocks("Session", "yolo", value)
+                blocks = build_approval_resolved_blocks("Session", "yolo", "session")
                 try:
                     await self._slack.update_blocks(
                         channel_id, msg_ts, blocks,
