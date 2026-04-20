@@ -3,6 +3,7 @@ import json
 from claude_slack_bridge.slack_formatter import (
     build_approval_blocks,
     build_approval_resolved_blocks,
+    build_options_blocks,
     build_post_tool_blocks,
     build_response_blocks,
     build_session_header_blocks,
@@ -260,6 +261,49 @@ def test_extract_options() -> None:
     cleaned2, choices2 = extract_options(text2)
     assert cleaned2 == text2
     assert choices2 == []
+
+
+# ── build_options_blocks ──
+
+
+def test_build_options_blocks_short_choices() -> None:
+    """Short choices: button label shows full text, no section block."""
+    blocks = build_options_blocks(["Yes", "No", "Maybe"])
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "actions"
+    buttons = blocks[0]["elements"]
+    assert [b["text"]["text"] for b in buttons] == ["Yes", "No", "Maybe"]
+    assert [b["value"] for b in buttons] == ["Yes", "No", "Maybe"]
+
+
+def test_build_options_blocks_long_choice_falls_back() -> None:
+    """Any choice > 75 chars: section block lists all, buttons labeled Option N."""
+    long_choice = "a" * 80
+    choices = [long_choice, "Short"]
+    blocks = build_options_blocks(choices)
+
+    assert len(blocks) == 2
+    assert blocks[0]["type"] == "section"
+    section_text = blocks[0]["text"]["text"]
+    assert long_choice in section_text
+    assert "Short" in section_text
+    assert "*1.*" in section_text
+    assert "*2.*" in section_text
+
+    assert blocks[1]["type"] == "actions"
+    buttons = blocks[1]["elements"]
+    assert [b["text"]["text"] for b in buttons] == ["Option 1", "Option 2"]
+    # Values preserve full choice text so the daemon receives the real selection
+    assert [b["value"] for b in buttons] == [long_choice, "Short"]
+
+
+def test_build_options_blocks_exactly_75_chars_no_fallback() -> None:
+    """Boundary: choice exactly at Slack's 75-char limit stays in compact mode."""
+    choice = "x" * 75
+    blocks = build_options_blocks([choice])
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "actions"
+    assert blocks[0]["elements"][0]["text"]["text"] == choice
 
 
 # ── New tests: build_approval_resolved_blocks ──

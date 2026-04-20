@@ -237,18 +237,39 @@ def extract_options(text: str) -> tuple[str, list[str]]:
     return text[: m.start()].rstrip(), choices
 
 
+_BUTTON_TEXT_LIMIT = 75
+
+
 def build_options_blocks(choices: list[str]) -> list[dict]:
-    """Build Slack action buttons from OPTIONS choices."""
+    """Build Slack action buttons from OPTIONS choices.
+
+    Default: each button's label is the full choice text.
+    Fallback: when any choice exceeds Slack's 75-char button label limit,
+    render a section block listing all choices numbered, with buttons
+    labeled "Option 1", "Option 2", etc.
+    """
+    choices = choices[:5]
+    needs_fallback = any(len(c) > _BUTTON_TEXT_LIMIT for c in choices)
+
+    blocks: list[dict] = []
+    if needs_fallback:
+        listing = "\n".join(f"*{i + 1}.* {c}" for i, c in enumerate(choices))
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": listing}})
+
     buttons = [
         {
             "type": "button",
-            "text": {"type": "plain_text", "text": c[:75]},
+            "text": {
+                "type": "plain_text",
+                "text": f"Option {i + 1}" if needs_fallback else c,
+            },
             "action_id": f"{OPTIONS_ACTION_PREFIX}{i}",
             "value": c,
         }
-        for i, c in enumerate(choices[:5])
+        for i, c in enumerate(choices)
     ]
-    return [{"type": "actions", "elements": buttons}]
+    blocks.append({"type": "actions", "elements": buttons})
+    return blocks
 
 
 def truncate_text(text: str, max_chars: int) -> str:
