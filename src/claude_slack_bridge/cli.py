@@ -223,7 +223,44 @@ def _daemonize() -> None:
 @main.command()
 def stop() -> None:
     """Stop the bridge daemon."""
+    unit = _find_systemd_unit()
+    if unit:
+        _systemctl_invoke(unit, "stop")
+        return
     _stop_daemon()
+
+
+_SYSTEMD_UNIT_NAME = "claude-slack-bridge.service"
+
+
+def _find_systemd_unit() -> tuple[str, bool] | None:
+    """Return (unit, is_user) if the systemd unit is enabled, else None.
+
+    is_user True → `systemctl --user`; False → system-level `systemctl` (needs sudo).
+    """
+    system = Path(f"/etc/systemd/system/{_SYSTEMD_UNIT_NAME}")
+    user = Path.home() / ".config" / "systemd" / "user" / _SYSTEMD_UNIT_NAME
+    if user.is_file():
+        return (_SYSTEMD_UNIT_NAME, True)
+    if system.is_file():
+        return (_SYSTEMD_UNIT_NAME, False)
+    return None
+
+
+def _systemctl_invoke(unit_info: tuple[str, bool], verb: str) -> None:
+    import subprocess
+    unit, is_user = unit_info
+    cmd = ["systemctl"]
+    if is_user:
+        cmd.append("--user")
+    else:
+        cmd.insert(0, "sudo")
+    cmd += [verb, unit]
+    click.echo(f"Delegating to systemd: {' '.join(cmd)}")
+    rc = subprocess.run(cmd).returncode
+    if rc != 0:
+        click.echo(f"systemctl {verb} exited with status {rc}", err=True)
+        raise SystemExit(rc)
 
 
 def _stop_daemon() -> bool:
@@ -291,6 +328,10 @@ def _find_pid_by_port(port: int) -> int | None:
 @click.option("-d", "--daemonize", is_flag=True, help="Run in background")
 def restart(daemonize: bool) -> None:
     """Stop the daemon (if running) and start a fresh one."""
+    unit = _find_systemd_unit()
+    if unit:
+        _systemctl_invoke(unit, "restart")
+        return
     _stop_daemon()
     cfg = load_config()
     if not cfg.slack_app_token or not cfg.slack_bot_token:

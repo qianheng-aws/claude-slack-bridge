@@ -152,9 +152,13 @@ claude plugins update slack-bridge@qianheng-plugins
 #    同时会清理旧版本写入的 hook 残留
 .venv/bin/claude-slack-bridge init
 
-# 4. 重启 daemon 加载新的后端代码
+# 4. 重启 daemon 加载新的后端代码。
+#    `restart` 会检测到 systemd service 并自动转调 `systemctl`，
+#    不需要你根据安装方式选命令。也可以直接 `systemctl restart`。
 claude-slack-bridge restart -d
 ```
+
+> **为什么要注意**：如果 systemd 和你手动 `claude-slack-bridge start -d` 同时想绑定 7778 端口，daemon 日志会循环刷 `Port 7778 in use`。现在 `restart` 感知到 systemd 时会自动走 `systemctl`，避免这个问题。
 
 最后 **重启 Claude Code TUI**，让它重新读取插件的 `hooks.json` 和 `~/.claude/settings.json` 中新增的 hook 项。
 

@@ -152,9 +152,14 @@ claude plugins update slack-bridge@qianheng-plugins
 #    changes (also cleans up hook entries left by older versions)
 .venv/bin/claude-slack-bridge init
 
-# 4. Restart the daemon to pick up new daemon code
+# 4. Restart the daemon to pick up new daemon code.
+#    `restart` detects a systemd unit and delegates to `systemctl` —
+#    no need to choose a path manually. Use `systemctl restart` directly
+#    if you prefer.
 claude-slack-bridge restart -d
 ```
+
+> **Why this matters**: if both `systemd` and a manual `claude-slack-bridge start -d` try to bind port 7778 simultaneously, the logs flood with `Port 7778 in use`. The `restart` command now delegates to `systemctl` when a unit is installed, avoiding that loop.
 
 Finally, **restart the Claude Code TUI** so it re-reads the plugin's `hooks.json` and any new hook entries in `~/.claude/settings.json`.
 
