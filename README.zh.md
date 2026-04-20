@@ -171,6 +171,46 @@ cd claude-slack-bridge && python3 -m venv .venv && .venv/bin/pip install -e .
 }
 ```
 
+## 开机自启（systemd）
+
+通过 systemd 让守护进程在机器重启后自动拉起：
+
+```bash
+sudo tee /etc/systemd/system/claude-slack-bridge.service << EOF
+[Unit]
+Description=Claude Slack Bridge Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$(whoami)
+ExecStart=$(which claude-slack-bridge) start
+Restart=always
+RestartSec=10
+WorkingDirectory=$HOME
+Environment=HOME=$HOME
+Environment=PATH=$(dirname $(which claude-slack-bridge)):$HOME/.local/bin:/usr/local/bin:/usr/bin
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable claude-slack-bridge
+sudo systemctl start claude-slack-bridge
+```
+
+常用命令：
+
+```bash
+sudo systemctl status claude-slack-bridge   # 查看状态
+sudo journalctl -u claude-slack-bridge -f   # 跟踪日志
+sudo systemctl restart claude-slack-bridge  # 重启
+```
+
+> **注意：** 如果之前用 `make start` 启动了守护进程，需要先 `make stop` 停掉，否则会端口冲突。
+
 ## 架构
 
 详见 [ARCHITECTURE.md](ARCHITECTURE.md) | [English](ARCHITECTURE.en.md)

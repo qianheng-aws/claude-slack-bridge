@@ -171,6 +171,46 @@ cd claude-slack-bridge && python3 -m venv .venv && .venv/bin/pip install -e .
 }
 ```
 
+## Auto-start with systemd
+
+To keep the daemon running across machine reboots:
+
+```bash
+sudo tee /etc/systemd/system/claude-slack-bridge.service << EOF
+[Unit]
+Description=Claude Slack Bridge Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$(whoami)
+ExecStart=$(which claude-slack-bridge) start
+Restart=always
+RestartSec=10
+WorkingDirectory=$HOME
+Environment=HOME=$HOME
+Environment=PATH=$(dirname $(which claude-slack-bridge)):$HOME/.local/bin:/usr/local/bin:/usr/bin
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable claude-slack-bridge
+sudo systemctl start claude-slack-bridge
+```
+
+Useful commands:
+
+```bash
+sudo systemctl status claude-slack-bridge   # check status
+sudo journalctl -u claude-slack-bridge -f   # follow logs
+sudo systemctl restart claude-slack-bridge  # restart
+```
+
+> **Note:** If you previously started the daemon with `make start`, stop it first (`make stop`) to avoid port conflicts.
+
 ## Architecture
 
 See [ARCHITECTURE.en.md](ARCHITECTURE.en.md) | [中文](ARCHITECTURE.md)

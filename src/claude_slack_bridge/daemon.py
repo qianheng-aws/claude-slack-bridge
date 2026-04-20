@@ -238,7 +238,8 @@ class Daemon(StreamMixin, EventsMixin):
             )
             session.cwd = cwd
             session.origin = "tui"
-            logger.info("Auto-bound TUI session %s to DM %s", session_key, dm_channel)
+            self._tui_sync_muted.add(session_key)
+            logger.info("Auto-bound TUI session %s to DM %s (muted by default)", session_key, dm_channel)
             return session
         except Exception:
             logger.error("Failed to auto-bind session %s", session_key, exc_info=True)
