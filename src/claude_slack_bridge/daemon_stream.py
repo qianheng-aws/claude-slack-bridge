@@ -83,39 +83,55 @@ class StreamMixin:
                     logger.debug("Failed to update progress message", exc_info=True)
 
     async def _finalize_progress(self, session: Session, final_text: str) -> None:
-        """Replace progress message with final result."""
+        """Replace progress message with final result.
+
+        Each chunk is sent under its own try/except so a single failure
+        (rate limit, network hiccup, api error on one message) does not
+        prevent subsequent chunks from being delivered — the previous
+        behavior truncated long responses to just the first chunk plus
+        "_(continued...)_" with nothing after.
+        """
         sid = session.session_id
 
         cleaned, _thinking = strip_thinking_tags(final_text)
         cleaned, choices = extract_options(cleaned)
         display = md_to_mrkdwn(cleaned)
 
-        if sid in self._progress:
-            state = self._progress.pop(sid)
-            msg_ts = state.get("msg_ts")
-            if msg_ts:
-                try:
-                    chunks = split_message(display)
-                    await self._slack.web.chat_update(
-                        channel=session.channel_id, ts=msg_ts, text=chunks[0]
-                    )
-                    for chunk in chunks[1:]:
-                        await self._slack.post_text(
-                            session.channel_id, chunk, session.thread_ts
-                        )
-                except Exception:
-                    await self._slack.post_text(
-                        session.channel_id, display[:_SLACK_MAX_TEXT], session.thread_ts
-                    )
-            else:
-                await self._slack.post_text(
-                    session.channel_id, display[:_SLACK_MAX_TEXT], session.thread_ts
-                )
-        else:
+        try:
             chunks = split_message(display)
-            for chunk in chunks:
-                await self._slack.post_text(
-                    session.channel_id, chunk, session.thread_ts
+        except Exception:
+            logger.warning("split_message failed, sending truncated single chunk", exc_info=True)
+            chunks = [display[:_SLACK_MAX_TEXT]]
+
+        state = self._progress.pop(sid, None)
+        msg_ts = state.get("msg_ts") if state else None
+
+        if msg_ts:
+            # Replace the progress message with chunk 0, then post the rest.
+            try:
+                await self._slack.web.chat_update(
+                    channel=session.channel_id, ts=msg_ts, text=chunks[0]
+                )
+            except Exception:
+                logger.warning(
+                    "chat_update of first finalize chunk failed; posting fresh instead",
+                    exc_info=True,
+                )
+                try:
+                    await self._slack.post_text(session.channel_id, chunks[0], session.thread_ts)
+                except Exception:
+                    logger.warning("post_text fallback for first chunk failed", exc_info=True)
+            rest = chunks[1:]
+        else:
+            rest = chunks
+
+        for idx, chunk in enumerate(rest, start=1 if msg_ts else 0):
+            try:
+                await self._slack.post_text(session.channel_id, chunk, session.thread_ts)
+            except Exception:
+                logger.warning(
+                    "post_text of chunk %d/%d failed — continuing with remaining chunks",
+                    idx, len(chunks), exc_info=True,
                 )
 
         # Mark finalized so JSONL watcher won't duplicate

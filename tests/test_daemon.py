@@ -527,6 +527,54 @@ async def test_sync_on_idempotent(config: BridgeConfig) -> None:
     assert daemon._slack.post_blocks.await_count == 1
 
 
+async def test_finalize_progress_chunk_failure_does_not_swallow_rest(config: BridgeConfig) -> None:
+    """If one chunk's post_text raises, remaining chunks must still be attempted.
+
+    Regression for the 'long sync response stops after first chunk' bug:
+    _finalize_progress used to wrap the entire chunk loop in one try/except,
+    so any Slack API hiccup on chunk N silently dropped chunks N+1..end.
+    """
+    daemon = Daemon(config)
+    session = daemon._register_session("sid-F", "/tmp")
+    session.channel_id = "D1"
+    session.thread_ts = "ts.root"
+
+    # Pretend we have a live progress message that finalize should chat_update.
+    daemon._progress["sid-F"] = {
+        "msg_ts": "ts.prog", "last_update": 0, "lines": [],
+        "_full_text": "", "_bracket_hold": "",
+    }
+
+    # Build a display long enough to split into 3+ chunks (SLACK_MSG_LIMIT = 3900).
+    long_text = ("word " * 2500)  # ~12,500 chars
+    # Slack double: chat_update succeeds, post_text fails on the SECOND call
+    # (i.e. first post_text after the chat_update — chunk index 1).
+    call_count = {"n": 0}
+    async def flaky_post_text(channel, text, thread_ts=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("simulated Slack rate limit")
+        return "ts.ok"
+
+    fake_web = MagicMock()
+    fake_web.chat_update = AsyncMock()
+    daemon._slack = MagicMock()
+    daemon._slack.web = fake_web
+    daemon._slack.post_text = AsyncMock(side_effect=flaky_post_text)
+
+    await daemon._finalize_progress(session, long_text)
+
+    # chat_update ran once for chunk 0.
+    fake_web.chat_update.assert_awaited_once()
+    # post_text was called for every remaining chunk even though one raised —
+    # the previous bug would have stopped at the first failure.
+    from claude_slack_bridge.slack_formatter import split_message, md_to_mrkdwn
+    expected_chunks = len(split_message(md_to_mrkdwn(long_text)))
+    assert expected_chunks >= 3, "test needs a message that splits into ≥3 chunks"
+    # chunks after chat_update = expected_chunks - 1
+    assert daemon._slack.post_text.await_count == expected_chunks - 1
+
+
 async def test_permission_request_ring_mute_lazy_binds_thread(config: BridgeConfig) -> None:
     """First permission-request under ring mute creates the thread on demand."""
     daemon = Daemon(config)
