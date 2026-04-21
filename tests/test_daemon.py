@@ -293,3 +293,26 @@ def test_forwarded_prompts_under_cap_not_cleared(config: BridgeConfig) -> None:
         daemon._forwarded_prompts.add(f"prompt-{i}")
 
     assert len(daemon._forwarded_prompts) == 10
+
+
+# ── mute_session / unmute_session persistence ──
+
+
+def test_mute_unmute_roundtrip_persists_to_disk(config: BridgeConfig) -> None:
+    """mute_session/unmute_session write muted.json and a fresh Daemon rehydrates it."""
+    daemon = Daemon(config)
+    muted_path = config.config_dir / "muted.json"
+
+    daemon.mute_session("s1")
+    daemon.mute_session("s2")
+    assert daemon._tui_sync_muted == {"s1", "s2"}
+    assert json.loads(muted_path.read_text()) == ["s1", "s2"]
+
+    # Rehydrate — new Daemon instance reads muted.json via _load_muted().
+    # Guards against NameError/import regressions in the persistence path.
+    reborn = Daemon(config)
+    assert reborn._tui_sync_muted == {"s1", "s2"}
+
+    reborn.unmute_session("s1")
+    assert reborn._tui_sync_muted == {"s2"}
+    assert json.loads(muted_path.read_text()) == ["s2"]
