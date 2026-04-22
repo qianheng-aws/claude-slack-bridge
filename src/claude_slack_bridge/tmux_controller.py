@@ -2,37 +2,21 @@
 
 Channel 3: Slack → tmux send-keys → Claude Code TUI
 
-Finds the tmux pane running a Claude Code session by matching PID
-or working directory, then sends keystrokes via tmux send-keys.
+Targets panes by tmux `pane_id` (e.g. `%7`), captured into the session
+record via `$TMUX_PANE` at bind/hook time. There is deliberately no
+cwd-based fallback: two panes can share a cwd, and if the bound pane
+has closed, picking "some other pane in the same cwd" routes the Slack
+message to a different session's TUI. Caller is expected to fall back
+to `--print` resume when this returns False.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
-import re
-from dataclasses import dataclass
 from typing import Optional
 
 logger = logging.getLogger("claude_slack_bridge")
-
-
-@dataclass
-class TmuxTarget:
-    session: str
-    window: int
-    pane: int
-
-    @property
-    def target_string(self) -> str:
-        return f"{self.session}:{self.window}.{self.pane}"
-
-    @classmethod
-    def from_string(cls, s: str) -> Optional["TmuxTarget"]:
-        m = re.match(r"^(.+):(\d+)\.(\d+)$", s)
-        if not m:
-            return None
-        return cls(session=m.group(1), window=int(m.group(2)), pane=int(m.group(3)))
 
 
 async def _run(cmd: str, *args: str) -> Optional[str]:
@@ -57,52 +41,6 @@ async def find_tmux() -> Optional[str]:
             return path
     result = await _run("which", "tmux")
     return result if result else None
-
-
-async def find_target_by_cwd(cwd: str) -> Optional[TmuxTarget]:
-    """Find tmux pane by working directory."""
-    tmux = await find_tmux()
-    if not tmux:
-        return None
-    output = await _run(tmux, "list-panes", "-a", "-F",
-                        "#{session_name}:#{window_index}.#{pane_index} #{pane_current_path}")
-    if not output:
-        return None
-    for line in output.splitlines():
-        parts = line.split(" ", 1)
-        if len(parts) == 2 and parts[1].strip() == cwd:
-            return TmuxTarget.from_string(parts[0])
-    return None
-
-
-async def find_target_by_command(command: str = "claude") -> Optional[TmuxTarget]:
-    """Find tmux pane running a specific command."""
-    tmux = await find_tmux()
-    if not tmux:
-        return None
-    output = await _run(tmux, "list-panes", "-a", "-F",
-                        "#{session_name}:#{window_index}.#{pane_index} #{pane_current_command}")
-    if not output:
-        return None
-    for line in output.splitlines():
-        parts = line.split(" ", 1)
-        if len(parts) == 2 and parts[1].strip() == command:
-            return TmuxTarget.from_string(parts[0])
-    return None
-
-
-async def send_keys(target: TmuxTarget, text: str, press_enter: bool = True) -> bool:
-    """Send text to a tmux pane via send-keys."""
-    tmux = await find_tmux()
-    if not tmux:
-        return False
-    # Send text literally (-l flag)
-    result = await _run(tmux, "send-keys", "-t", target.target_string, "-l", text)
-    if result is None:
-        return False
-    if press_enter:
-        await _run(tmux, "send-keys", "-t", target.target_string, "Enter")
-    return True
 
 
 async def pane_exists(pane_id: str) -> bool:
@@ -137,23 +75,18 @@ async def send_keys_by_pane_id(pane_id: str, text: str, press_enter: bool = True
     return True
 
 
-async def send_message_to_session(text: str, pane_id: str = "", cwd: str = "") -> bool:
-    """Send a message to a Claude TUI pane.
+async def send_message_to_session(text: str, pane_id: str = "") -> bool:
+    """Send a message to the Claude TUI pane identified by pane_id.
 
-    Tries pane_id first (stable, precise). Falls back to cwd matching
-    (first pane with matching cwd) only if pane_id is empty or stale.
+    Returns False when pane_id is empty or the pane is gone — the caller
+    must fall back to `--print` resume rather than guessing a pane by
+    cwd (which can clobber an unrelated session).
     """
-    if pane_id:
-        if await send_keys_by_pane_id(pane_id, text):
-            logger.info("Sent to tmux pane %s: %s", pane_id, text[:50])
-            return True
-        logger.info("pane_id %s unavailable, falling back to cwd search", pane_id)
-
-    if cwd:
-        target = await find_target_by_cwd(cwd)
-        if target:
-            logger.info("Sending to tmux %s (cwd fallback): %s", target.target_string, text[:50])
-            return await send_keys(target, text)
-
-    logger.warning("No tmux pane found for pane_id=%s cwd=%s", pane_id, cwd)
+    if not pane_id:
+        logger.info("No pane_id recorded for session; skipping tmux send")
+        return False
+    if await send_keys_by_pane_id(pane_id, text):
+        logger.info("Sent to tmux pane %s: %s", pane_id, text[:50])
+        return True
+    logger.info("pane_id %s unavailable (pane gone); skipping tmux send", pane_id)
     return False

@@ -223,10 +223,10 @@ class EventsMixin:
         if session.mode == SessionMode.PROCESS.value:
             await self._resume_process(session, text)
         elif session.origin == "tui":
-            # TUI-originated session: try tmux send-keys first
-            cwd = session.cwd or self._config.work_dir
+            # TUI-originated session: try tmux send-keys to the exact
+            # bound pane. No cwd fallback — see tmux_controller.
             sent = await send_message_to_session(
-                text, pane_id=session.tmux_pane_id, cwd=cwd,
+                text, pane_id=session.tmux_pane_id,
             )
             if sent:
                 if len(self._forwarded_prompts) >= 50:
