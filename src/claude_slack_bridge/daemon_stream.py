@@ -151,14 +151,34 @@ class StreamMixin:
 
         session = self._session_mgr.get(session_id)
         if not session or not self._slack:
+            logger.info(
+                "jsonl-watcher: dispatch skipped session=%s reason=%s",
+                session_id[:12], "no-session" if not session else "no-slack",
+            )
             return
         if self.is_silenced(session.session_id):
+            logger.info(
+                "jsonl-watcher: dispatch skipped session=%s reason=silenced",
+                session_id[:12],
+            )
             return
         # Skip PROCESS mode (stream events handle it) and finalized turns
         if session.mode == SessionMode.PROCESS.value:
+            logger.info(
+                "jsonl-watcher: dispatch skipped session=%s reason=process-mode",
+                session_id[:12],
+            )
             return
         if session.session_id in self._finalized_sessions:
+            logger.info(
+                "jsonl-watcher: dispatch skipped session=%s reason=finalized",
+                session_id[:12],
+            )
             return
+        logger.info(
+            "jsonl-watcher: dispatch session=%s count=%d",
+            session_id[:12], len(messages),
+        )
 
         for msg in messages:
             if msg.role == "assistant" and msg.text:

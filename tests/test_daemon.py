@@ -648,3 +648,170 @@ async def test_version_mismatch_silent_when_matching(config: BridgeConfig) -> No
     await _maybe_warn_version_mismatch(daemon, "C1", "t1", "")
 
     assert daemon._slack.post_text.await_count == 0
+
+
+# ── Plan-mode sync regression (reporter: sync-on then /plan stops posting) ──
+
+
+def _setup_bound_sync_session(daemon, sid: str = "sid-plan") -> None:
+    """Bound HOOK-mode session with sync mute + mocked Slack. Shared by plan-mode tests."""
+    session = daemon._session_mgr.create(
+        session_id=sid, session_name=f"TUI-{sid}",
+        channel_id="D1", thread_ts="ts.root",
+        mode=SessionMode.HOOK,
+    )
+    session.cwd = "/tmp"
+    daemon.set_mute_level(sid, "sync")  # opt in so is_silenced() is False
+
+    fake_web = MagicMock()
+    fake_web.chat_update = AsyncMock()
+    daemon._slack = MagicMock()
+    daemon._slack.web = fake_web
+    daemon._slack.post_text = AsyncMock(return_value="ts.new")
+    daemon._slack.post_blocks = AsyncMock(return_value="ts.new")
+    daemon._slack.set_thread_status = AsyncMock()
+    daemon._slack.update_text = AsyncMock()
+    daemon._bot_user_id = "U_BOT"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "H1: daemon_http.py:377-382 filter drops plan-mode prompts whose "
+        "<system-reminder> wrapper merely prefixes the real user text. "
+        "Remove this xfail when the filter is narrowed to strip the wrapper."
+    ),
+)
+async def test_user_prompt_plan_mode_system_reminder_filter_drops_real_text(
+    config: BridgeConfig,
+) -> None:
+    """H1: plan-mode prepends <system-reminder> to every user prompt. The filter
+    at daemon_http.py:377-382 sees "<" + "system-reminder" and drops the whole
+    payload — even though real user text follows. Reproduces the "messages stop
+    syncing after entering /plan" report.
+    """
+    daemon = Daemon(config)
+    _setup_bound_sync_session(daemon, "sid-plan")
+
+    app = create_http_app(daemon)
+    from aiohttp.test_utils import TestServer, TestClient
+
+    real_text = "Hey, actually write the code"
+    prompt = (
+        "<system-reminder>\nPlan mode is active. The user indicated "
+        "that they do not want you to execute yet.\n</system-reminder>\n\n"
+        + real_text
+    )
+
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/hooks/user-prompt", json={
+            "session_key": "sid-plan", "prompt": prompt, "cwd": "/tmp",
+        })
+        assert resp.status == 200
+
+    # The real user text must be synced to Slack. Current code filters it out.
+    post_calls = daemon._slack.post_text.await_args_list
+    texts = [c.args[1] for c in post_calls]
+    assert any(real_text in t for t in texts), (
+        f"Real user text was never posted to Slack. post_text calls: {texts!r}"
+    )
+
+
+async def test_user_prompt_bare_system_reminder_still_filtered(
+    config: BridgeConfig,
+) -> None:
+    """H1 guard: a prompt that is *only* a system-reminder (no real user text)
+    must stay filtered, so the fix doesn't leak internal scaffolding into Slack.
+    """
+    daemon = Daemon(config)
+    _setup_bound_sync_session(daemon, "sid-bare")
+
+    app = create_http_app(daemon)
+    from aiohttp.test_utils import TestServer, TestClient
+
+    prompt = "<system-reminder>internal reminder only</system-reminder>"
+
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/hooks/user-prompt", json={
+            "session_key": "sid-bare", "prompt": prompt, "cwd": "/tmp",
+        })
+        assert resp.status == 200
+
+    # Must NOT post the reminder as a user message.
+    for call in daemon._slack.post_text.await_args_list:
+        assert "internal reminder only" not in call.args[1]
+
+
+async def test_user_prompt_pops_progress_even_when_filtered(
+    config: BridgeConfig,
+) -> None:
+    """H2 probe: user-prompt's _progress.pop runs before the filter, so a
+    filtered plan-mode prompt still resets progress state — which means a
+    *subsequent* post-tool-use creates a fresh message, NOT editing the old one.
+
+    If this assertion ever flips, the pop has been moved inside the filter
+    and H2 becomes the new explanation for "edits previous message".
+    """
+    daemon = Daemon(config)
+    _setup_bound_sync_session(daemon, "sid-pop")
+
+    # Seed stale progress state from a prior (unfinalized) turn.
+    daemon._progress["sid-pop"] = {
+        "msg_ts": "ts.old", "last_update": 0, "lines": [],
+        "_text": "", "_tool": "",
+    }
+
+    app = create_http_app(daemon)
+    from aiohttp.test_utils import TestServer, TestClient
+
+    prompt = "<system-reminder>Plan mode is active.</system-reminder>"  # filtered
+
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/hooks/user-prompt", json={
+            "session_key": "sid-pop", "prompt": prompt, "cwd": "/tmp",
+        })
+        assert resp.status == 200
+
+    # Pop at daemon_http.py:361 runs unconditionally (before the filter).
+    assert "sid-pop" not in daemon._progress, (
+        "user-prompt handler should clear stale _progress before filtering"
+    )
+
+
+async def test_post_tool_use_without_preceding_user_prompt_edits_old_msg(
+    config: BridgeConfig,
+) -> None:
+    """H2 reproducer: if a plan-mode turn boundary doesn't fire UserPromptSubmit
+    at all (e.g. an auto-accepted plan continuing into tools), post-tool-use
+    lands on the OLD progress msg_ts and chat_update-s it. This matches the
+    reporter's "new content edits the previous message" symptom.
+    """
+    daemon = Daemon(config)
+    _setup_bound_sync_session(daemon, "sid-notouch")
+
+    # Pretend a previous turn left progress in place and was never popped/finalized.
+    daemon._progress["sid-notouch"] = {
+        "msg_ts": "ts.old", "last_update": 0, "lines": [],
+        "_text": "prior assistant text", "_tool": "",
+    }
+
+    app = create_http_app(daemon)
+    from aiohttp.test_utils import TestServer, TestClient
+
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/hooks/post-tool-use", json={
+            "session_key": "sid-notouch",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "tool_output": "",
+            "cwd": "/tmp",
+        })
+        assert resp.status == 200
+
+    # _update_progress should have edited ts.old via chat_update, not posted fresh.
+    chat_update = daemon._slack.web.chat_update
+    chat_update.assert_awaited()
+    kwargs = chat_update.await_args.kwargs
+    assert kwargs.get("ts") == "ts.old", (
+        "H2 confirmed: post-tool-use without user-prompt edits the stale msg_ts"
+    )
