@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""Resolve the real Claude Code session_id for the current TUI.
+
+Slash commands run inside a shell spawned by `claude`. Picking the newest
+`*.jsonl` under `~/.claude/projects/-<cwd>/` is wrong when the same cwd has
+parallel/older sessions — the bind ends up on a different session than the
+one the user typed `/sync-on` in.
+
+Claude Code writes `~/.claude/sessions/<pid>.json` for every interactive
+process with its real `sessionId`. Walking up our parent-process chain
+finds that file for the exact TUI that invoked us.
+
+On success: prints the session_id to stdout, exits 0.
+On failure: prints nothing, exits 1 (caller falls back to mtime heuristic).
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+
+def _ppid(pid: int) -> int | None:
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("PPid:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def resolve_session_id(cwd: str) -> str | None:
+    sessions_dir = Path.home() / ".claude" / "sessions"
+    if not sessions_dir.is_dir():
+        return None
+    pid = os.getpid()
+    for _ in range(32):  # bound the walk
+        pid = _ppid(pid) or 0
+        if pid <= 1:
+            return None
+        candidate = sessions_dir / f"{pid}.json"
+        if not candidate.is_file():
+            continue
+        try:
+            data = json.loads(candidate.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if data.get("kind") != "interactive":
+            continue
+        if cwd and data.get("cwd") != cwd:
+            continue
+        sid = data.get("sessionId")
+        if sid:
+            return str(sid)
+    return None
+
+
+def main() -> int:
+    cwd = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
+    sid = resolve_session_id(cwd)
+    if not sid:
+        return 1
+    print(sid)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -9,10 +9,13 @@ you're on your phone and want to approve tools from Slack without the thread
 filling up with sync chatter.
 
 ```bash
-CWD_ENCODED=$(echo "$PWD" | sed 's|^/||; s|/|-|g')
-SESSION_DIR="$HOME/.claude/projects/-${CWD_ENCODED}"
-[ ! -d "$SESSION_DIR" ] && SESSION_DIR=$(ls -dt $HOME/.claude/projects/-* 2>/dev/null | head -1)
-SESSION_ID=$(basename "$(ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null | head -1)" .jsonl 2>/dev/null)
+SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/bin/claude-slack-bridge-session-id" "$PWD" 2>/dev/null)
+if [ -z "$SESSION_ID" ]; then
+    CWD_ENCODED=$(echo "$PWD" | sed 's|^/||; s|/|-|g')
+    SESSION_DIR="$HOME/.claude/projects/-${CWD_ENCODED}"
+    [ ! -d "$SESSION_DIR" ] && SESSION_DIR=$(ls -dt $HOME/.claude/projects/-* 2>/dev/null | head -1)
+    SESSION_ID=$(basename "$(ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null | head -1)" .jsonl 2>/dev/null)
+fi
 
 if [ -z "$SESSION_ID" ]; then
     echo "⚠️ No session found"

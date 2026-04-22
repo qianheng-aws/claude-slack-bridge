@@ -21,11 +21,16 @@ else
     echo "✅ Daemon running"
 fi
 
-# Step 2: Find and bind session
-CWD_ENCODED=$(echo "$PWD" | sed 's|^/||; s|/|-|g')
-SESSION_DIR="$HOME/.claude/projects/-${CWD_ENCODED}"
-[ ! -d "$SESSION_DIR" ] && SESSION_DIR=$(ls -dt $HOME/.claude/projects/-* 2>/dev/null | head -1)
-SESSION_ID=$(basename "$(ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null | head -1)" .jsonl 2>/dev/null)
+# Step 2: Resolve the real session_id of *this* TUI. Claude Code writes
+# ~/.claude/sessions/<pid>.json — walking up our parent chain finds it.
+# Fall back to newest-jsonl only if that lookup fails (older CC versions).
+SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/bin/claude-slack-bridge-session-id" "$PWD" 2>/dev/null)
+if [ -z "$SESSION_ID" ]; then
+    CWD_ENCODED=$(echo "$PWD" | sed 's|^/||; s|/|-|g')
+    SESSION_DIR="$HOME/.claude/projects/-${CWD_ENCODED}"
+    [ ! -d "$SESSION_DIR" ] && SESSION_DIR=$(ls -dt $HOME/.claude/projects/-* 2>/dev/null | head -1)
+    SESSION_ID=$(basename "$(ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null | head -1)" .jsonl 2>/dev/null)
+fi
 
 if [ -z "$SESSION_ID" ]; then
     echo "⚠️ No session found"
