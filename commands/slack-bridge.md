@@ -15,7 +15,11 @@ PYTHON="${PROJECT_DIR}/.venv/bin/python"
 if curl -s http://127.0.0.1:7778/health 2>/dev/null | grep -q ok; then
     echo "✅ Daemon already running"
 else
-    setsid "$PYTHON" -m claude_slack_bridge.cli start >> ~/.claude/slack-bridge/daemon.log 2>&1 < /dev/null &
+    if command -v setsid >/dev/null 2>&1; then
+        setsid "$PYTHON" -m claude_slack_bridge.cli start >> ~/.claude/slack-bridge/daemon.log 2>&1 < /dev/null &
+    else
+        nohup "$PYTHON" -m claude_slack_bridge.cli start >> ~/.claude/slack-bridge/daemon.log 2>&1 < /dev/null &
+    fi
     sleep 3
     curl -s http://127.0.0.1:7778/health | grep -q ok && echo "✅ Daemon started" || echo "❌ Failed"
 fi
