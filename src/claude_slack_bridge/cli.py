@@ -81,10 +81,27 @@ def init() -> None:
 
     _refresh_defaults(config_dir)
 
+    # If _update_shell_rc just edited an rc file for the current shell, the
+    # user's live shell still has a stale PATH — `claude-slack-bridge start`
+    # won't resolve until they reload it. Build the instructions to match.
+    shell = os.environ.get("SHELL", "")
+    live_path = os.environ.get("PATH", "").split(":")
+    needs_source = str(_LOCAL_BIN) not in live_path
+    if needs_source:
+        rc_name = ".zshrc" if shell.endswith("/zsh") else ".bashrc"
+        rc_path = Path.home() / rc_name
+        if rc_path.is_file():
+            reload_hint = f"source ~/{rc_name}"
+        else:
+            reload_hint = f'export PATH="{_LOCAL_BIN}:$PATH"'
+        start_prefix = f"{reload_hint} && "
+    else:
+        start_prefix = ""
+
     click.echo(
         "\nSetup complete! Install the Claude Code plugin to wire up hooks:\n"
         "  claude plugins install slack-bridge@qianheng-plugins\n"
-        "Then run 'claude-slack-bridge start' to launch the daemon."
+        f"Then run '{start_prefix}claude-slack-bridge start' to launch the daemon."
     )
 
 
@@ -184,13 +201,6 @@ def _update_shell_rc() -> None:
         with rc.open("a") as fh:
             fh.write(block)
         click.echo(f"Added ~/.local/bin to PATH in {rc}")
-
-    # If the user's current shell hasn't sourced the rc yet, warn them.
-    if str(_LOCAL_BIN) not in os.environ.get("PATH", "").split(":"):
-        click.echo(
-            f"Note: ~/.local/bin is not on your current PATH. Restart your shell "
-            f"or run: export PATH=\"{_LOCAL_BIN}:$PATH\""
-        )
 
 
 @main.command()
