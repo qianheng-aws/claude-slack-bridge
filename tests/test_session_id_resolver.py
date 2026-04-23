@@ -214,3 +214,44 @@ def test_trace_logs_each_candidate(
     assert "cwd mismatch" in blob  # pid=500 branch
     assert "kind='print'" in blob or 'kind="print"' in blob  # pid=700 branch
     assert "matched sessionId=right" in blob  # pid=900 branch
+
+
+def test_ppid_falls_back_to_ps_when_procfs_absent(
+    resolver: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """macOS has no /proc, so _ppid must fall through to `ps -o ppid= -p`.
+    We simulate 'no procfs' by stubbing _ppid_procfs to None and make sure
+    _ppid still returns a sane integer via the ps subprocess path.
+    """
+    # Force procfs miss: _ppid_procfs returns None regardless of input.
+    monkeypatch.setattr(resolver, "_ppid_procfs", lambda pid: None)
+
+    # Stub subprocess.check_output so we don't depend on the test runner
+    # actually having `ps -o ppid= -p <our_pid>` work — we just pin the
+    # contract: _ppid_ps shells out and parses the integer output.
+    calls: list[list[str]] = []
+
+    def fake_check_output(cmd, **kwargs):
+        calls.append(list(cmd))
+        return "4242\n"
+
+    monkeypatch.setattr(resolver.subprocess, "check_output", fake_check_output)
+
+    assert resolver._ppid(12345) == 4242
+    assert calls == [["ps", "-o", "ppid=", "-p", "12345"]]
+
+
+def test_ppid_procfs_preferred_when_available(
+    resolver: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Linux we read /proc/<pid>/status directly — no subprocess spawn.
+    If _ppid_procfs returns a value, _ppid_ps must not be called.
+    """
+    monkeypatch.setattr(resolver, "_ppid_procfs", lambda pid: 7777)
+
+    def boom(pid):
+        raise AssertionError("ps fallback should not run when procfs works")
+
+    monkeypatch.setattr(resolver, "_ppid_ps", boom)
+
+    assert resolver._ppid(1) == 7777

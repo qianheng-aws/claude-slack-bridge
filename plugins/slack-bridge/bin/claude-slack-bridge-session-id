@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 
-def _ppid(pid: int) -> int | None:
+def _ppid_procfs(pid: int) -> int | None:
     try:
         with open(f"/proc/{pid}/status") as f:
             for line in f:
@@ -31,6 +32,23 @@ def _ppid(pid: int) -> int | None:
     except (OSError, ValueError):
         return None
     return None
+
+
+def _ppid_ps(pid: int) -> int | None:
+    # macOS has no /proc. `ps -o ppid= -p <pid>` is the POSIX portable
+    # fallback and works on both macOS (BSD ps) and Linux.
+    try:
+        out = subprocess.check_output(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            stderr=subprocess.DEVNULL, text=True, timeout=2,
+        ).strip()
+        return int(out) if out else None
+    except (subprocess.SubprocessError, ValueError, OSError):
+        return None
+
+
+def _ppid(pid: int) -> int | None:
+    return _ppid_procfs(pid) or _ppid_ps(pid)
 
 
 def _same_path(a: str, b: str) -> bool:
