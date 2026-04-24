@@ -388,6 +388,28 @@ def create_http_app(daemon) -> web.Application:
         if session.origin != "tui":
             session.origin = "tui"
 
+        # Pending-approval cleanup must run under ring mute too: the
+        # permission-request card was posted (ring gate is is_fully_muted,
+        # which ring does NOT satisfy), so when the TUI approves locally
+        # we still owe Slack a card update — otherwise the buttons stay
+        # live and clickable after the decision is already made.
+        if (
+            hook_type == "post-tool-use"
+            and daemon._slack
+            and session.channel_id
+        ):
+            pending_ts = daemon._pending_approval_msgs.pop(session.session_id, None)
+            if pending_ts:
+                try:
+                    tool_name = payload.get("tool_name", "")
+                    blocks = build_approval_resolved_blocks(tool_name, "approved", "")
+                    await daemon._slack.update_blocks(
+                        session.channel_id, pending_ts, blocks,
+                        text="✅ Approved in TUI",
+                    )
+                except Exception:
+                    logger.warning("Failed to update approval message", exc_info=True)
+
         # Sync TUI content to Slack (unless silenced by any mute level).
         # Permission-request has its own gate (is_fully_muted) downstream.
         if not daemon.is_silenced(session.session_id):
@@ -435,18 +457,6 @@ def create_http_app(daemon) -> web.Application:
                 await daemon._slack.set_thread_status(
                     session.channel_id, session.thread_ts, f"is using {tool_name}"
                 )
-
-                # If there's a pending approval message, replace it with result
-                pending_ts = daemon._pending_approval_msgs.pop(session.session_id, None)
-                if pending_ts:
-                    try:
-                        blocks = build_approval_resolved_blocks(tool_name, "approved", "")
-                        await daemon._slack.update_blocks(
-                            session.channel_id, pending_ts, blocks,
-                            text="\u2705 Approved in TUI"
-                        )
-                    except Exception:
-                        logger.warning("Failed to update approval message", exc_info=True)
 
                 # TodoWrite gets its own persistent, in-place updated message
                 if tool_name == "TodoWrite":

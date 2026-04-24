@@ -847,6 +847,62 @@ async def test_post_tool_use_does_not_touch_progress_message(
     daemon._slack.set_thread_status.assert_awaited()
 
 
+async def test_post_tool_use_clears_pending_approval_card_under_ring_mute(
+    config: BridgeConfig,
+) -> None:
+    """Regression: under ring mute, approving from the TUI must still flip
+    the Slack approval card to "Approved in TUI".
+
+    Bug: post-tool-use short-circuits through `if not daemon.is_silenced(...)`,
+    which is True for ring mute — so the `_pending_approval_msgs.pop + update_blocks`
+    block never runs, leaving the Approve/Reject/Trust/YOLO buttons live in
+    Slack even after the TUI has already decided. Meanwhile the *approval
+    request* itself is gated on `is_fully_muted`, which IS False for ring,
+    so the card gets posted in the first place. The two gates disagree and
+    the card leaks.
+    """
+    daemon = Daemon(config)
+    session = daemon._session_mgr.create(
+        session_id="sid-ring", session_name="TUI-ring",
+        channel_id="D1", thread_ts="ts.root",
+        mode=SessionMode.HOOK,
+    )
+    session.cwd = "/tmp"
+    daemon.set_mute_level("sid-ring", "ring")  # is_silenced=True, is_fully_muted=False
+
+    fake_web = MagicMock()
+    fake_web.chat_update = AsyncMock()
+    daemon._slack = MagicMock()
+    daemon._slack.web = fake_web
+    daemon._slack.update_blocks = AsyncMock()
+    daemon._slack.set_thread_status = AsyncMock()
+
+    # Simulate: permission-request previously posted an approval card and
+    # recorded its ts. TUI then approved locally → post-tool-use arrives.
+    daemon._pending_approval_msgs["sid-ring"] = "ts.approval"
+
+    app = create_http_app(daemon)
+    from aiohttp.test_utils import TestServer, TestClient
+
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/hooks/post-tool-use", json={
+            "session_key": "sid-ring",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "tool_output": "",
+            "cwd": "/tmp",
+        })
+        assert resp.status == 200
+
+    # Card must be updated to the "approved in TUI" state.
+    daemon._slack.update_blocks.assert_awaited_once()
+    call = daemon._slack.update_blocks.await_args
+    assert call.args[0] == "D1"
+    assert call.args[1] == "ts.approval"
+    # And the pending pointer cleared so a future turn doesn't re-edit it.
+    assert "sid-ring" not in daemon._pending_approval_msgs
+
+
 # ── _strip_wrapper_blocks unit tests ──
 
 
