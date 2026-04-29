@@ -1,0 +1,74 @@
+# Reference Slack app manifest for claude-slack-bridge.
+#
+# How to use:
+#   1. https://api.slack.com/apps → Create New App → From a manifest
+#   2. Pick your workspace, paste this YAML, Next → Create
+#   3. Install to Workspace (grants the bot scopes)
+#   4. Basic Information → App-Level Tokens → Generate Token and Scopes
+#      with `connections:write` → this is your xapp- token
+#   5. OAuth & Permissions → copy the Bot User OAuth Token → this is
+#      your xoxb- token
+#   6. Feed both tokens to `claude-slack-bridge init`
+#
+# Rename the app / display name before creating if you want something
+# other than "ClaudeCode".
+
+display_information:
+  name: ClaudeCode
+  description: Claude Code TUI integration with Slack
+  background_color: "#b8630f"
+
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: ClaudeCode
+    always_online: true
+  # Enables the Agents & Assistants UI in DMs: suggested prompts,
+  # "is working…" thread status, glowing name. Omit this block if you
+  # don't want the assistant-styled DM.
+  assistant_view:
+    assistant_description: "Claude Code TUI integration with Slack"
+    suggested_prompts:
+      - title: "Status"
+        message: "status"
+      - title: "Help"
+        message: "help"
+
+oauth_config:
+  scopes:
+    bot:
+      # Core: receive mentions + DMs, post replies, add reactions
+      - app_mentions:read
+      - chat:write
+      - reactions:write
+      - im:history
+      - im:read
+      - im:write
+      # Channel messages (so the bot can be invited to channels)
+      - channels:history
+      - channels:read
+      - groups:history
+      - groups:read
+      # Daemon creates/archives channels for multi-session layouts
+      - channels:manage
+      # Required by features.assistant_view above
+      - assistant:write
+
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.channels
+      - message.groups
+      - message.im
+      # Required by features.assistant_view above
+      - assistant_thread_started
+      - assistant_thread_context_changed
+  interactivity:
+    is_enabled: true   # required for approval + OPTIONS buttons
+  socket_mode_enabled: true
+  org_deploy_enabled: false
+  token_rotation_enabled: false

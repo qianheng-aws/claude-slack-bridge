@@ -100,14 +100,16 @@ Open a new shell (or `source ~/.bashrc` / `~/.zshrc`) so `~/.local/bin` is on `P
 <details>
 <summary><b>Slack App Setup</b></summary>
 
-1. Create app at https://api.slack.com/apps
-2. Enable **Socket Mode** (generates `xapp-` token)
-3. Add **Bot Token Scopes**: `app_mentions:read`, `channels:history`, `channels:read`, `chat:write`, `im:history`, `im:read`, `reactions:write`
-4. **Event Subscriptions** → Subscribe to bot events: `app_mention`, `message.channels`, `message.im`
-5. **Interactivity** → Enable (for OPTIONS buttons)
-6. **Assistant** → Enable `assistant_view` in app manifest with `assistant:write` scope
-7. **Event Subscriptions** → Also subscribe to: `assistant_thread_started`, `assistant_thread_context_changed`
-8. Install app to workspace, invite bot to channels
+Fastest path — **use the reference manifest**:
+
+1. Copy [`docs/slack-manifest.example.yaml`](docs/slack-manifest.example.yaml)
+2. https://api.slack.com/apps → **Create New App** → **From a manifest** → paste
+3. **Install to Workspace** (grants the bot scopes listed in the manifest)
+4. **Basic Information → App-Level Tokens** → Generate with `connections:write` → this is your `xapp-` token
+5. **OAuth & Permissions** → copy Bot User OAuth Token → this is your `xoxb-` token
+6. Feed both tokens to `claude-slack-bridge init`
+
+The manifest already enables Socket Mode, Interactivity, the Assistant view, and every scope / event the daemon uses. If you prefer to configure manually, read the manifest — each block is commented with what the daemon needs it for.
 
 </details>
 
