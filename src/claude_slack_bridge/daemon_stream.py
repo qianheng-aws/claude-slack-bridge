@@ -179,6 +179,10 @@ class StreamMixin:
         to bail out entirely.
         """
         sid = session.session_id
+        logger.info(
+            "finalize: enter session=%s final_text_len=%d",
+            sid[:12], len(final_text),
+        )
 
         cleaned, _thinking = strip_thinking_tags(final_text)
         cleaned, choices = extract_options(cleaned)
@@ -198,6 +202,10 @@ class StreamMixin:
         if state is not None:
             state["_finalized"] = True
         msg_ts = state.get("msg_ts") if state else None
+        logger.info(
+            "finalize: session=%s msg_ts=%s chunks=%d choices=%d",
+            sid[:12], msg_ts, len(chunks), len(choices),
+        )
 
         if msg_ts:
             # Replace the progress message with chunk 0 under the lock so it
@@ -374,6 +382,10 @@ class StreamMixin:
                     # tail-500 snapshot (+ cursor). This is the exact race the
                     # regression test pins.
                     if state.get("_finalized"):
+                        logger.info(
+                            "stream: preview skipped post-finalize session=%s",
+                            sid[:12],
+                        )
                         return
                     try:
                         await self._slack.web.chat_update(
