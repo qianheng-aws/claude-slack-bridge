@@ -121,21 +121,22 @@ async def _post_or_update_todos(daemon, session, todos: list[dict]) -> None:
         logger.debug("Todo post failed", exc_info=True)
 
 
-def _read_last_turn_from_jsonl(conv_parser, session_id: str, cwd: str) -> str:
-    """Read all assistant text from the last turn in the JSONL file.
+def _collect_last_turn_texts(conv_parser, session_id: str, cwd: str) -> list[str]:
+    """Return each assistant text block of the last turn, in order.
 
-    Claude Island pattern: JSONL is the single source of truth.
-    Returns all assistant text blocks after the last user message.
+    Claude Island pattern: JSONL is the single source of truth. A "turn" is
+    everything after the last user message; a turn can contain several
+    assistant text blocks interleaved with tool_use (narration between tools,
+    then a wrap-up). Empty list on any failure.
     """
     if not cwd:
-        return ""
+        return []
     try:
-        # Force a fresh incremental read
-        messages = conv_parser.parse_incremental(session_id, cwd)
-        # Get all messages including previously parsed ones
+        # Force a fresh incremental read, then read the accumulated messages.
+        conv_parser.parse_incremental(session_id, cwd)
         all_msgs = conv_parser.get_all_messages(session_id)
         if not all_msgs:
-            return ""
+            return []
 
         # Find last user message index, collect all assistant text after it
         last_user_idx = -1
@@ -147,14 +148,101 @@ def _read_last_turn_from_jsonl(conv_parser, session_id: str, cwd: str) -> str:
         start = last_user_idx + 1 if last_user_idx >= 0 else 0
         for msg in all_msgs[start:]:
             if msg.role == "assistant" and msg.text:
-                # Prefix each block with ● so finalized text matches the
-                # streaming progress (see daemon_stream._on_jsonl_messages)
-                # — otherwise Slack readers get a wall of text while the
-                # TUI shows neat bullets between each reasoning step.
-                parts.append("● " + msg.text)
-        return "\n\n".join(parts)
+                parts.append(msg.text)
+        return parts
     except Exception:
-        return ""
+        return []
+
+
+def _read_last_turn_from_jsonl(conv_parser, session_id: str, cwd: str) -> str:
+    """Read ALL assistant text from the last turn (narration + wrap-up), joined.
+
+    Used by full-sync mode, which mirrors the whole TUI turn to Slack. Each
+    block is prefixed with ● so the finalized text matches the streaming
+    progress (see daemon_stream._on_jsonl_messages) — otherwise Slack readers
+    get a wall of text while the TUI shows neat bullets between reasoning steps.
+    """
+    return "\n\n".join(
+        "● " + p for p in _collect_last_turn_texts(conv_parser, session_id, cwd)
+    )
+
+
+def _read_last_message_from_jsonl(conv_parser, session_id: str, cwd: str) -> str:
+    """Read only the FINAL assistant text block of the last turn.
+
+    This is the wrap-up message Claude writes right before it stops for the
+    user's input — what summary mode posts, without the intermediate "let me
+    check X…" narration that precedes the tool calls. No ● prefix: summary mode
+    prefers the Stop hook payload (also unprefixed), so keeping the JSONL
+    fallback bare makes the two sources render identically.
+    """
+    parts = _collect_last_turn_texts(conv_parser, session_id, cwd)
+    return parts[-1] if parts else ""
+
+
+async def _echo_user_prompt(daemon, session, payload) -> None:
+    """Post a TUI-typed user prompt to Slack as ``💬 User: ...``.
+
+    Shared by full-sync and summary modes. Skips prompts forwarded from
+    Slack→tmux (they'd be a duplicate echo) and peels off leading Claude Code
+    wrapper blocks (<system-reminder>/<command-*>, e.g. plan-mode notices),
+    posting whatever real user text survives — nothing if it was wrapper-only.
+    Assumes the session already has a Slack thread (channel_id set).
+    """
+    stripped = payload.get("prompt", "").strip()
+    if not stripped:
+        return
+    # Skip Slack→tmux echo (forwarded from Slack, would be a duplicate).
+    if stripped in daemon._forwarded_prompts:
+        daemon._forwarded_prompts.discard(stripped)
+        return
+    # Peel off leading wrapper blocks; skip if nothing real survives.
+    user_text = _strip_wrapper_blocks(stripped)
+    if not user_text:
+        return
+    await daemon._slack.post_text(
+        session.channel_id,
+        f"\U0001f4ac *User:* {user_text[:3000]}",
+        session.thread_ts,
+    )
+
+
+async def _post_final_answer(daemon, session, payload, last_only: bool = False) -> None:
+    """Post the last turn (or just its final message) to Slack at Stop.
+
+    ``last_only`` controls how much of the turn is posted, and — importantly —
+    which source wins:
+
+      - False (full-sync): the whole turn, every assistant text block joined.
+        Only the JSONL has the full turn (the hook payload carries just the
+        last message), so read JSONL first; payload ``response`` is the
+        fallback.
+
+      - True (summary): only the final assistant message (the wrap-up). Here
+        the Stop hook payload's ``response`` — Claude Code's
+        ``last_assistant_message`` — is the authoritative, RACE-FREE source and
+        wins. The JSONL is only a fallback: when Stop fires, Claude Code has
+        often not yet flushed the final assistant text block to disk, so a
+        JSONL read races and returns the *previous* text block (the mid-turn
+        narration). Preferring the payload avoids that stale read.
+
+    PROCESS mode is skipped — its final result is already delivered by the
+    stream-event handler (_on_stream_event).
+    """
+    if session.mode == SessionMode.PROCESS.value:
+        return
+    cwd = payload.get("cwd", "") or session.cwd
+    payload_text = payload.get("response", "")
+    if last_only:
+        final_text = payload_text or _read_last_message_from_jsonl(
+            daemon._conv_parser, session.session_id, cwd
+        )
+    else:
+        final_text = _read_last_turn_from_jsonl(
+            daemon._conv_parser, session.session_id, cwd
+        ) or payload_text
+    if final_text:
+        await daemon._finalize_progress(session, final_text)
 
 
 def _read_recent_assistant_text(conv_parser, session_id: str, cwd: str) -> str:
@@ -264,8 +352,10 @@ def create_http_app(daemon) -> web.Application:
     async def mute_session(req: web.Request) -> web.Response:
         """Set the session's mute level.
 
-        Payload: {"level": "sync" | "ring" | "none"}
-          sync — explicit opt-in to TUI→Slack sync (from /sync-on)
+        Payload: {"level": "sync" | "summary" | "ring" | "none"}
+          sync — explicit opt-in to full TUI→Slack sync (from /sync-on)
+          summary — silence ambient chatter but post each turn's final answer
+                    and keep Slack approvals (/sync-summary)
           ring — silence ambient chatter but keep Slack approvals (/sync-ring)
           none — drop back to default full mute (/sync-off, or unset state)
         """
@@ -275,18 +365,19 @@ def create_http_app(daemon) -> web.Application:
         if level == "none":
             daemon.clear_mute_level(sid)
             return web.json_response({"ok": True, "level": None})
-        if level in ("sync", "ring"):
+        if level in ("sync", "summary", "ring"):
             daemon.set_mute_level(sid, level)
-            # Ring needs a Slack thread eventually (for approvals). Creating
-            # it here — rather than on the first permission-request — means
-            # the user sees the thread appear right when they opt in.
-            if level == "ring":
+            # summary/ring need a Slack thread eventually (for approvals, and for
+            # summary's final answer). Creating it here — rather than on the first
+            # permission-request/Stop — means the user sees the thread appear
+            # right when they opt in.
+            if level in ("summary", "ring"):
                 session = daemon._session_mgr.get(sid)
                 if session:
                     await daemon._ensure_slack_thread(session)
             return web.json_response({"ok": True, "level": level})
         return web.json_response(
-            {"ok": False, "error": "level must be one of: sync, ring, none"},
+            {"ok": False, "error": "level must be one of: sync, summary, ring, none"},
             status=400,
         )
 
@@ -426,23 +517,8 @@ def create_http_app(daemon) -> web.Application:
                 await daemon._slack.set_thread_status(
                     session.channel_id, session.thread_ts, "is working on your request"
                 )
-                prompt_text = payload.get("prompt", "")
-                stripped = prompt_text.strip()
-                # Skip Slack→tmux echo (forwarded from Slack, would be duplicate)
-                if stripped in daemon._forwarded_prompts:
-                    daemon._forwarded_prompts.discard(stripped)
-                else:
-                    # Peel off leading <system-reminder>/<command-*> blocks
-                    # that Claude Code prepends (e.g. plan-mode notices). Post
-                    # whatever real user text survives; if nothing survives,
-                    # it was a pure wrapper — skip it.
-                    user_text = _strip_wrapper_blocks(stripped)
-                    if user_text:
-                        await daemon._slack.post_text(
-                            session.channel_id,
-                            f"\U0001f4ac *User:* {user_text[:3000]}",
-                            session.thread_ts,
-                        )
+                # TUI-typed prompt — sync to Slack so team can see what was asked
+                await _echo_user_prompt(daemon, session, payload)
             elif hook_type == "post-tool-use" and daemon._slack and session.channel_id:
                 tool_name = payload.get("tool_name", "")
                 tool_input = payload.get("tool_input", {})
@@ -486,16 +562,22 @@ def create_http_app(daemon) -> web.Application:
 
                 # PROCESS mode already finalizes via _on_stream_event result.
                 # HOOK/IDLE modes: read JSONL for full turn, overwrite progress.
-                if session.mode != SessionMode.PROCESS.value:
-                    cwd = payload.get("cwd", "") or session.cwd
-                    full_text = _read_last_turn_from_jsonl(
-                        daemon._conv_parser, session.session_id, cwd
-                    )
-                    if not full_text:
-                        # Fallback to hook payload
-                        full_text = payload.get("response", "")
-                    if full_text:
-                        await daemon._finalize_progress(session, full_text)
+                await _post_final_answer(daemon, session, payload)
+
+        # Summary-only mode: ambient chatter is silenced (so the block above is
+        # skipped), but the thread still shows a clean Q&A log — the user's
+        # prompt and the turn's FINAL message — without the tool/progress noise
+        # in between. (Reachable only for "summary": sync is not silenced.)
+        # No thread may exist yet (only created on an approval), so ensure one.
+        elif daemon.posts_summary(session.session_id) and daemon._slack:
+            if hook_type == "user-prompt":
+                if await daemon._ensure_slack_thread(session):
+                    await _echo_user_prompt(daemon, session, payload)
+            elif hook_type == "stop":
+                # FINAL message only — the wrap-up before Claude stops, not the
+                # intermediate narration.
+                if await daemon._ensure_slack_thread(session):
+                    await _post_final_answer(daemon, session, payload, last_only=True)
 
         if hook_type == "stop":
             # TUI exited — drain queued Slack messages

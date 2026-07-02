@@ -120,6 +120,7 @@ The manifest already enables Socket Mode, Interactivity, the Assistant view, and
 | Command | Effect |
 |---------|--------|
 | `/slack-bridge:sync-on` | Start daemon + bind current session, opt in to full TUI↔Slack sync |
+| `/slack-bridge:sync-summary` | Sync a clean Q&A log — your prompt + each turn's final message (no progress chatter); approvals still ring Slack |
 | `/slack-bridge:sync-ring` | Silence sync chatter but keep Slack approval buttons active |
 | `/slack-bridge:sync-off` | Reset to the default: nothing syncs, approvals use the TUI dialog |
 | `/slack-bridge:start-daemon` | Start daemon only |

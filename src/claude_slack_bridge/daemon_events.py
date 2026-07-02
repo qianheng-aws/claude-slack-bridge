@@ -206,6 +206,10 @@ class EventsMixin:
             self.set_mute_level(session.session_id, "sync")
             await self._slack.post_text(channel_id, "\U0001f50a TUI sync resumed for this session", thread_ts)
             return
+        if lower == "sync summary":
+            self.set_mute_level(session.session_id, "summary")
+            await self._slack.post_text(channel_id, "\U0001f4dd Summary-only sync — prompt + final message + Slack approvals", thread_ts)
+            return
         if lower == "sync ring":
             self.set_mute_level(session.session_id, "ring")
             await self._slack.post_text(channel_id, "\U0001f515 TUI chatter muted — Slack approvals still active", thread_ts)

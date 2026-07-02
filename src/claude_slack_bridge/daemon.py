@@ -61,8 +61,14 @@ class Daemon(StreamMixin, EventsMixin):
         # Per-session mute level. Persisted so mute choices survive daemon restart.
         #   "sync" — user opted in: full TUI→Slack sync, permission requests
         #            post Slack buttons. (Set by /sync-on.)
-        #   "ring" — ambient sync chatter silenced but permission requests
-        #            still ring Slack. (Set by /sync-ring.)
+        #   "summary" — progress/tool chatter silenced, but the thread still
+        #            shows a clean Q&A log: the user's prompt plus the turn's
+        #            FINAL message (the wrap-up before Claude stops, not the
+        #            mid-turn narration). Permission requests still ring Slack.
+        #            The "phone mode": you see what was asked and the answer, and
+        #            can approve tools, without the progress noise. (/sync-summary.)
+        #   "ring" — ambient sync chatter silenced (no final message either) but
+        #            permission requests still ring Slack. (Set by /sync-ring.)
         #   (absent) — default: full mute. Hook-side chatter and permission
         #            requests stay in the TUI. (Restored by /sync-off.)
         # PROCESS-mode stream events (Slack-originated sessions) bypass this
@@ -88,7 +94,7 @@ class Daemon(StreamMixin, EventsMixin):
 
     # ── Muted-state persistence ──
 
-    _VALID_LEVELS = {"sync", "ring"}
+    _VALID_LEVELS = {"sync", "summary", "ring"}
 
     def _load_muted(self) -> dict[str, str]:
         try:
@@ -127,12 +133,21 @@ class Daemon(StreamMixin, EventsMixin):
         self._save_muted()
 
     def is_silenced(self, session_id: str) -> bool:
-        """Gate ambient sync chatter. True unless session opted in via /sync-on."""
+        """Gate ambient sync chatter (prompts, tool/progress updates, lifecycle,
+        todos). True unless session opted into full sync via /sync-on. Note that
+        "summary" is silenced here — its only Slack output is the final message,
+        gated separately by posts_summary()."""
         return self._mute_levels.get(session_id) != "sync"
 
+    def posts_summary(self, session_id: str) -> bool:
+        """Gate the final Slack post at Stop. True for full sync (whole turn) and
+        summary mode (final message only); ring and default-mute do not post."""
+        return self._mute_levels.get(session_id) in ("sync", "summary")
+
     def is_fully_muted(self, session_id: str) -> bool:
-        """Gate permission-request handoff. True unless session is in sync or ring."""
-        return self._mute_levels.get(session_id) not in ("sync", "ring")
+        """Gate permission-request handoff. True unless session is in sync,
+        summary, or ring — those levels ring Slack for approvals."""
+        return self._mute_levels.get(session_id) not in ("sync", "summary", "ring")
 
     # ── Session cleanup ──
 

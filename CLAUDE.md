@@ -108,9 +108,11 @@ The daemon automatically reads this `CLAUDE.md` file and injects it into the `--
 ## Plugin structure
 
 The repo doubles as a Claude Code marketplace plugin. Slash commands are namespaced under `slack-bridge:` and defined as markdown files in `plugins/slack-bridge/commands/`:
-- `/slack-bridge:sync-on` — start daemon + bind session to Slack DM
+- `/slack-bridge:sync-on` — start daemon + bind session to Slack DM (full sync)
+- `/slack-bridge:sync-summary` — sync a clean Q&A log (your prompt + each turn's final message, no progress chatter); approvals still ring Slack
 - `/slack-bridge:start-daemon` — start daemon only
 - `/slack-bridge:stop-daemon` — stop daemon
 - `/slack-bridge:status` — show status and active sessions
 - `/slack-bridge:logs` — view recent daemon logs
+- `/slack-bridge:sync-ring` — silence sync chatter but keep Slack approval buttons
 - `/slack-bridge:sync-off` — mute TUI→Slack sync for current session

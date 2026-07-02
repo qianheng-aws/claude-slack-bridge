@@ -119,7 +119,9 @@ claude plugins install slack-bridge@qianheng-plugins
 
 | 命令 | 效果 |
 |------|------|
-| `/slack-bridge:sync-on` | 启动守护进程 + 绑定当前会话到 Slack DM |
+| `/slack-bridge:sync-on` | 启动守护进程 + 绑定当前会话到 Slack DM（完整同步） |
+| `/slack-bridge:sync-summary` | 同步简洁的问答记录——你的提问 + 每轮的最后一条消息（不含中间进度和过程叙述）；审批仍推送到 Slack |
+| `/slack-bridge:sync-ring` | 静音同步内容，但保留 Slack 审批按钮 |
 | `/slack-bridge:sync-off` | 静音当前会话的 TUI→Slack 同步 |
 | `/slack-bridge:start-daemon` | 仅启动守护进程 |
 | `/slack-bridge:stop-daemon` | 停止守护进程 |
