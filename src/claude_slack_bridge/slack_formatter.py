@@ -316,9 +316,14 @@ def build_session_header_blocks(
     session_id: str,
     directory: str,
 ) -> list[dict]:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    # Local tz of the host running the daemon — astimezone() with no arg
+    # attaches the system tz. %Z renders its abbreviation (e.g. "PDT",
+    # "CST"); falls back to a UTC offset if the host has no named tz.
+    local = datetime.now().astimezone()
+    label = local.strftime("%Z") or local.strftime("UTC%z")
+    now = f"{local.strftime('%Y-%m-%d %H:%M')} {label}"
     resume_cmd = f"cd {directory} && claude --resume {session_id}" if directory else f"claude --resume {session_id}"
     return [
         {

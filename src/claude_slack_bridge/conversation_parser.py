@@ -151,25 +151,44 @@ class SessionFileWatcher:
         self._watching[session_id] = cwd
         # Skip existing content — only process messages written after watch starts
         path = _session_file_path(session_id, cwd)
-        if os.path.exists(path):
+        exists = os.path.exists(path)
+        start_offset = 0
+        if exists:
             state = self._parser._states.setdefault(session_id, _ParseState())
             if state.last_offset == 0:
                 try:
                     state.last_offset = os.path.getsize(path)
                 except OSError:
                     pass
+            start_offset = state.last_offset
+        logger.info(
+            "jsonl-watcher: watch session=%s path=%s exists=%s start_offset=%d",
+            session_id[:12], path, exists, start_offset,
+        )
         if not self._task or self._task.done():
             self._task = asyncio.ensure_future(self._poll_loop())
 
     def unwatch(self, session_id: str) -> None:
+        if session_id in self._watching:
+            logger.info("jsonl-watcher: unwatch session=%s", session_id[:12])
         self._watching.pop(session_id, None)
 
     async def _poll_loop(self) -> None:
         while self._watching:
             for sid, cwd in list(self._watching.items()):
                 new_msgs = self._parser.parse_incremental(sid, cwd)
-                if new_msgs and self._on_new_messages:
-                    await self._on_new_messages(sid, new_msgs)
+                if new_msgs:
+                    # Log counts per-role so we can see tool_use vs text flow
+                    counts: dict[str, int] = {}
+                    for m in new_msgs:
+                        counts[m.role] = counts.get(m.role, 0) + 1
+                    logger.info(
+                        "jsonl-watcher: session=%s new_msgs=%d %s",
+                        sid[:12], len(new_msgs),
+                        " ".join(f"{r}={c}" for r, c in counts.items()),
+                    )
+                    if self._on_new_messages:
+                        await self._on_new_messages(sid, new_msgs)
             await asyncio.sleep(0.5)
 
     def stop(self) -> None:

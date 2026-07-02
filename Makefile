@@ -13,7 +13,11 @@ test:
 
 start:
 	@curl -s http://127.0.0.1:7778/health 2>/dev/null | grep -q ok && echo "Already running" && exit 0 || true
-	setsid .venv/bin/python -m claude_slack_bridge.cli start >> ~/.claude/slack-bridge/daemon.log 2>&1 < /dev/null &
+	@if command -v setsid >/dev/null 2>&1; then \
+		setsid .venv/bin/python -m claude_slack_bridge.cli start >> ~/.claude/slack-bridge/daemon.log 2>&1 < /dev/null & \
+	else \
+		nohup .venv/bin/python -m claude_slack_bridge.cli start >> ~/.claude/slack-bridge/daemon.log 2>&1 < /dev/null & \
+	fi
 	@sleep 2 && curl -s http://127.0.0.1:7778/health | grep -q ok && echo "✅ Started" || echo "❌ Failed"
 
 stop:

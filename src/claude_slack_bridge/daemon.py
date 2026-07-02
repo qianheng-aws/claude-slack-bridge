@@ -43,6 +43,13 @@ class Daemon(StreamMixin, EventsMixin):
         # Progress message: session_id -> {msg_ts, last_update, lines: list[str]}
         # All tool calls and streaming text go into ONE message, overwritten by final result
         self._progress: dict[str, dict] = {}
+        # Per-session asyncio.Lock to serialize Slack chat_update calls for the
+        # same progress message. Without this, streaming preview updates and
+        # the terminal _finalize_progress chat_update race each other — a late
+        # preview update can land *after* finalize, clobbering the full reply
+        # with the tail-500 preview (+ streaming cursor). See test_finalize_*
+        # regression tests in test_daemon.py.
+        self._progress_locks: dict[str, asyncio.Lock] = {}
         # YOLO: per-session auto-allow until daemon restart. Backs the
         # "YOLO" button on Slack approval cards.
         self._trusted_sessions: set[str] = set()
@@ -196,15 +203,21 @@ class Daemon(StreamMixin, EventsMixin):
         )
         session.origin = "slack"
 
-        # Pre-seed progress state with reaction controller
+        # Pre-seed progress state with reaction controller. Must include all
+        # keys that either streaming path expects — _text_blocks/_tool for the
+        # HOOK-mode _update_progress display, plus _full_text/_bracket_hold for
+        # the PROCESS-mode stream-event accumulator.
         if reaction_controller:
             self._progress[session_id] = {
                 "msg_ts": None,
                 "last_update": 0,
                 "lines": [],
+                "_text_blocks": [],
+                "_tool": "",
                 "_full_text": "",
                 "_bracket_hold": "",
                 "_reactions": reaction_controller,
+                "_finalized": False,
             }
 
         await self._pool.start(

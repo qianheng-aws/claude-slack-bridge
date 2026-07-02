@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 
@@ -26,6 +27,32 @@ from claude_slack_bridge.slack_formatter import (
 )
 
 _SLACK_MAX_TEXT = SLACK_MSG_LIMIT
+
+# Wrapper tags Claude Code prepends to user prompts: system reminders (e.g.
+# plan-mode notices), slash-command metadata, and local-command output blocks.
+# Stripping these *leading* blocks recovers any real user text that follows,
+# so a plan-mode prompt like
+#     "<system-reminder>Plan mode is active...</system-reminder>\n\nfix the bug"
+# still syncs "fix the bug" to Slack instead of being dropped wholesale.
+_WRAPPER_TAG_RE = re.compile(
+    r"^\s*<(system-reminder|task-notification|command-name|command-message|"
+    r"command-args|local-command-[\w-]+)>.*?</\1>\s*",
+    re.DOTALL,
+)
+
+
+def _strip_wrapper_blocks(text: str) -> str:
+    """Peel off leading <system-reminder>/<command-*>/<local-command-*> blocks.
+
+    Returns the remainder stripped of surrounding whitespace. If the whole
+    payload is wrapper-only, returns an empty string and the caller should
+    treat it as a synthetic prompt (don't post to Slack).
+    """
+    prev = None
+    while prev != text:
+        prev = text
+        text = _WRAPPER_TAG_RE.sub("", text, count=1)
+    return text.strip()
 
 
 async def _maybe_warn_version_mismatch(
@@ -130,17 +157,24 @@ def _collect_last_turn_texts(conv_parser, session_id: str, cwd: str) -> list[str
 def _read_last_turn_from_jsonl(conv_parser, session_id: str, cwd: str) -> str:
     """Read ALL assistant text from the last turn (narration + wrap-up), joined.
 
-    Used by full-sync mode, which mirrors the whole TUI turn to Slack.
+    Used by full-sync mode, which mirrors the whole TUI turn to Slack. Each
+    block is prefixed with ● so the finalized text matches the streaming
+    progress (see daemon_stream._on_jsonl_messages) — otherwise Slack readers
+    get a wall of text while the TUI shows neat bullets between reasoning steps.
     """
-    return "\n\n".join(_collect_last_turn_texts(conv_parser, session_id, cwd))
+    return "\n\n".join(
+        "● " + p for p in _collect_last_turn_texts(conv_parser, session_id, cwd)
+    )
 
 
 def _read_last_message_from_jsonl(conv_parser, session_id: str, cwd: str) -> str:
     """Read only the FINAL assistant text block of the last turn.
 
     This is the wrap-up message Claude writes right before it stops for the
-    user's input — the "summary" summary mode posts, without the intermediate
-    "let me check X…" narration that precedes the tool calls.
+    user's input — what summary mode posts, without the intermediate "let me
+    check X…" narration that precedes the tool calls. No ● prefix: summary mode
+    prefers the Stop hook payload (also unprefixed), so keeping the JSONL
+    fallback bare makes the two sources render identically.
     """
     parts = _collect_last_turn_texts(conv_parser, session_id, cwd)
     return parts[-1] if parts else ""
@@ -150,7 +184,9 @@ async def _echo_user_prompt(daemon, session, payload) -> None:
     """Post a TUI-typed user prompt to Slack as ``💬 User: ...``.
 
     Shared by full-sync and summary modes. Skips prompts forwarded from
-    Slack→tmux (they'd be a duplicate echo) and Claude Code system messages.
+    Slack→tmux (they'd be a duplicate echo) and peels off leading Claude Code
+    wrapper blocks (<system-reminder>/<command-*>, e.g. plan-mode notices),
+    posting whatever real user text survives — nothing if it was wrapper-only.
     Assumes the session already has a Slack thread (channel_id set).
     """
     stripped = payload.get("prompt", "").strip()
@@ -160,16 +196,13 @@ async def _echo_user_prompt(daemon, session, payload) -> None:
     if stripped in daemon._forwarded_prompts:
         daemon._forwarded_prompts.discard(stripped)
         return
-    # Skip Claude Code system messages.
-    if stripped.startswith("<") and any(
-        tag in stripped[:100]
-        for tag in ("task-notification", "system-reminder",
-                    "local-command", "command-name", "command-message")
-    ):
+    # Peel off leading wrapper blocks; skip if nothing real survives.
+    user_text = _strip_wrapper_blocks(stripped)
+    if not user_text:
         return
     await daemon._slack.post_text(
         session.channel_id,
-        f"\U0001f4ac *User:* {stripped[:3000]}",
+        f"\U0001f4ac *User:* {user_text[:3000]}",
         session.thread_ts,
     )
 
@@ -382,7 +415,12 @@ def create_http_app(daemon) -> web.Application:
             if session.mode != SessionMode.PROCESS.value:
                 return web.Response(text="approved")
 
-            # PROCESS mode: post approval buttons to the Slack thread
+            # PROCESS mode: post approval buttons to the Slack thread.
+            # Seal the in-flight progress message first so the buttons
+            # land below the current stream; otherwise later chat_update
+            # calls on the progress msg re-order it visually above the
+            # approval and users think the stream has stalled.
+            await daemon._seal_progress(session)
             await daemon._slack.set_thread_status(
                 session.channel_id, session.thread_ts,
                 f"Waiting for approval \u2014 {tool_name}..."
@@ -441,6 +479,28 @@ def create_http_app(daemon) -> web.Application:
         if session.origin != "tui":
             session.origin = "tui"
 
+        # Pending-approval cleanup must run under ring mute too: the
+        # permission-request card was posted (ring gate is is_fully_muted,
+        # which ring does NOT satisfy), so when the TUI approves locally
+        # we still owe Slack a card update — otherwise the buttons stay
+        # live and clickable after the decision is already made.
+        if (
+            hook_type == "post-tool-use"
+            and daemon._slack
+            and session.channel_id
+        ):
+            pending_ts = daemon._pending_approval_msgs.pop(session.session_id, None)
+            if pending_ts:
+                try:
+                    tool_name = payload.get("tool_name", "")
+                    blocks = build_approval_resolved_blocks(tool_name, "approved", "")
+                    await daemon._slack.update_blocks(
+                        session.channel_id, pending_ts, blocks,
+                        text="✅ Approved in TUI",
+                    )
+                except Exception:
+                    logger.warning("Failed to update approval message", exc_info=True)
+
         # Sync TUI content to Slack (unless silenced by any mute level).
         # Permission-request has its own gate (is_fully_muted) downstream.
         if not daemon.is_silenced(session.session_id):
@@ -474,37 +534,16 @@ def create_http_app(daemon) -> web.Application:
                     session.channel_id, session.thread_ts, f"is using {tool_name}"
                 )
 
-                # If there's a pending approval message, replace it with result
-                pending_ts = daemon._pending_approval_msgs.pop(session.session_id, None)
-                if pending_ts:
-                    try:
-                        blocks = build_approval_resolved_blocks(tool_name, "approved", "")
-                        await daemon._slack.update_blocks(
-                            session.channel_id, pending_ts, blocks,
-                            text="\u2705 Approved in TUI"
-                        )
-                    except Exception:
-                        logger.warning("Failed to update approval message", exc_info=True)
-
                 # TodoWrite gets its own persistent, in-place updated message
                 if tool_name == "TodoWrite":
                     await _post_or_update_todos(daemon, session, tool_input.get("todos", []))
                     return web.Response(text="ok")
 
-                # Tool/Skill status — different emoji for skills
-                is_skill = tool_name == "Skill"
-                if is_skill:
-                    skill_name = tool_input.get("skill", tool_name)
-                    line = "\U0001f3af `" + skill_name + "`"
-                elif tool_name == "Bash":
-                    line = "\U0001fac6 `Bash` " + tool_input.get("command", "")[:80]
-                elif tool_name in ("Read", "Write", "Edit", "Glob", "Grep"):
-                    line = "\U0001fac6 `" + tool_name + "` " + tool_input.get("file_path", tool_input.get("pattern", ""))[:80]
-                elif tool_name == "Agent":
-                    line = "\U0001f916 `Agent` " + tool_input.get("description", tool_input.get("prompt", ""))[:60]
-                else:
-                    line = "\U0001fac6 `" + tool_name + "`"
-                await daemon._update_progress(session, line, is_tool=True)
+                # Tool status lines are rendered by the JSONL watcher
+                # (_on_jsonl_messages) as the single content source. The
+                # hook's job here is limited to status side-effects —
+                # reaction phase, thread status, pending-approval cleanup
+                # — so we don't double-append the tool line.
             elif hook_type == "stop" and daemon._slack and session.channel_id:
                 # Stop JSONL watcher FIRST — prevents race with finalize
                 daemon._file_watcher.unwatch(session.session_id)
@@ -712,6 +751,10 @@ def create_http_app(daemon) -> web.Application:
         # buttons have somewhere to land.
         if not await daemon._ensure_slack_thread(session):
             return web.Response(text="approved")
+
+        # Seal the in-flight progress message so approval buttons land
+        # below the current stream (see PROCESS-mode site above for why).
+        await daemon._seal_progress(session)
 
         # Thread status: waiting for approval
         await daemon._slack.set_thread_status(

@@ -35,14 +35,32 @@ _CURSOR = " \u25cd"     # Streaming cursor character
 class StreamMixin:
     """Mixin providing stream event processing and progress message management."""
 
+    def _progress_lock(self, session_id: str) -> asyncio.Lock:
+        """Return (creating on demand) the per-session lock that serializes
+        chat_update calls on the active progress message.
+
+        See Daemon.__init__ for why this exists — short version: streaming
+        preview updates and _finalize_progress both chat_update the same
+        msg_ts, and without serialization a late preview can clobber the
+        final reply.
+        """
+        lock = self._progress_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._progress_locks[session_id] = lock
+        return lock
+
     # ── Progress message (single message, overwritten by final result) ──
 
     async def _update_progress(self, session: Session, line: str, is_tool: bool = False) -> None:
-        """Update progress message with separate slots for text and tool status.
+        """Update progress message with a stream of text/tool events.
 
-        Progress message has two areas that don't overwrite each other:
-        - _text: intermediate assistant reasoning (from JSONL watcher)
-        - _tool: current tool status (from PostToolUse hook, replaces previous)
+        Timeline model: every event (thinking block or tool line) is
+        archived into _text_blocks in arrival order so the final Slack
+        message reads like the TUI log. _tool holds the *current* tool
+        line so the streaming cursor stays attached to the most recent
+        action; when a new tool arrives, the previous one graduates
+        into _text_blocks before being overwritten.
         """
         sid = session.session_id
         now = time.time()
@@ -50,23 +68,39 @@ class StreamMixin:
             msg_ts = await self._slack.post_text(
                 session.channel_id, line + _CURSOR, session.thread_ts
             )
+            logger.info(
+                "progress: new message session=%s is_tool=%s ts=%s",
+                sid[:12], is_tool, msg_ts,
+            )
             self._progress[sid] = {
                 "msg_ts": msg_ts, "last_update": now, "lines": [],
-                "_text": "" if is_tool else line,
+                "_text_blocks": [] if is_tool else [line],
                 "_tool": line if is_tool else "",
+                "_finalized": False,
             }
         else:
             state = self._progress[sid]
+            # Tolerate pre-seeded state dicts that may have skipped these
+            # keys (e.g. PROCESS-mode seed before the tool-timeline rework
+            # added them). Callers are expected to seed the keys going
+            # forward; this is the belt-and-braces.
+            state.setdefault("_text_blocks", [])
+            state.setdefault("_tool", "")
             if is_tool:
+                # Archive the previous tool line into history before
+                # overwriting, so users see the whole tool sequence
+                # instead of just the currently-running one.
+                if state["_tool"]:
+                    state["_text_blocks"].append(state["_tool"])
                 state["_tool"] = line
             else:
-                state["_text"] = line
+                state["_text_blocks"].append(line)
             state["lines"].append(line)  # Keep for finalize context
 
-            # Build display: text + tool (both visible)
-            parts = []
-            if state["_text"]:
-                parts.append(state["_text"])
+            # Build display: all text blocks joined + current tool line.
+            parts: list[str] = []
+            if state["_text_blocks"]:
+                parts.append("\n\n".join(state["_text_blocks"]))
             if state["_tool"]:
                 parts.append(state["_tool"])
             if not parts:
@@ -74,13 +108,59 @@ class StreamMixin:
 
             if now - state["last_update"] >= _EDIT_INTERVAL:
                 text = "\n".join(parts) + _CURSOR
-                try:
-                    await self._slack.web.chat_update(
-                        channel=session.channel_id, ts=state["msg_ts"], text=text[:_SLACK_MAX_TEXT]
-                    )
-                    state["last_update"] = now
-                except Exception:
-                    logger.debug("Failed to update progress message", exc_info=True)
+                async with self._progress_lock(sid):
+                    # Re-check finalize flag under the lock — _finalize_progress
+                    # may have completed while this coroutine was waiting.
+                    if state.get("_finalized"):
+                        return
+                    try:
+                        await self._slack.web.chat_update(
+                            channel=session.channel_id, ts=state["msg_ts"], text=text[:_SLACK_MAX_TEXT]
+                        )
+                        state["last_update"] = now
+                    except Exception:
+                        logger.debug("Failed to update progress message", exc_info=True)
+
+    async def _seal_progress(self, session: Session) -> None:
+        """Freeze the current progress message and forget the msg_ts.
+
+        Called right before we post an out-of-band message (e.g. approval
+        buttons) so the next tool/text event creates a *new* progress
+        message below the interruption, rather than being chat_update-ed
+        into the old one. Without this, Slack's timeline shows the
+        approval buttons wedged above the latest progress edit and users
+        think the stream has stalled.
+        """
+        sid = session.session_id
+        state = self._progress.pop(sid, None)
+        if state is not None:
+            # Same pattern as _finalize_progress: flag sealed so any preview
+            # update still waiting on the lock bails out.
+            state["_finalized"] = True
+        if not state or not state.get("msg_ts"):
+            self._progress_locks.pop(sid, None)
+            return
+        # Redraw the current display one last time without the cursor, so
+        # the frozen snapshot looks final instead of mid-stream.
+        parts: list[str] = []
+        if state.get("_text_blocks"):
+            parts.append("\n\n".join(state["_text_blocks"]))
+        if state.get("_tool"):
+            parts.append(state["_tool"])
+        if not parts:
+            self._progress_locks.pop(sid, None)
+            return
+        text = "\n".join(parts)
+        async with self._progress_lock(sid):
+            try:
+                await self._slack.web.chat_update(
+                    channel=session.channel_id,
+                    ts=state["msg_ts"],
+                    text=text[:_SLACK_MAX_TEXT],
+                )
+            except Exception:
+                logger.debug("Failed to seal progress message", exc_info=True)
+        self._progress_locks.pop(sid, None)
 
     async def _finalize_progress(self, session: Session, final_text: str) -> None:
         """Replace progress message with final result.
@@ -90,8 +170,19 @@ class StreamMixin:
         prevent subsequent chunks from being delivered — the previous
         behavior truncated long responses to just the first chunk plus
         "_(continued...)_" with nothing after.
+
+        Serialization: the first chat_update (replacing the progress msg)
+        runs under the per-session _progress_lock so concurrent streaming
+        preview updates cannot land *after* this call and clobber the
+        final text with a tail-500 snapshot. A _finalized flag on the
+        state dict tells any preview coroutine still waiting on the lock
+        to bail out entirely.
         """
         sid = session.session_id
+        logger.info(
+            "finalize: enter session=%s final_text_len=%d",
+            sid[:12], len(final_text),
+        )
 
         cleaned, _thinking = strip_thinking_tags(final_text)
         cleaned, choices = extract_options(cleaned)
@@ -103,24 +194,36 @@ class StreamMixin:
             logger.warning("split_message failed, sending truncated single chunk", exc_info=True)
             chunks = [display[:_SLACK_MAX_TEXT]]
 
+        # Flip _finalized before any further awaits so any preview update
+        # waiting on (or about to acquire) the lock sees the flag and bails.
+        # pop() returns the same dict object, so mutating state after pop
+        # still reaches every coroutine holding a reference to it.
         state = self._progress.pop(sid, None)
+        if state is not None:
+            state["_finalized"] = True
         msg_ts = state.get("msg_ts") if state else None
+        logger.info(
+            "finalize: session=%s msg_ts=%s chunks=%d choices=%d",
+            sid[:12], msg_ts, len(chunks), len(choices),
+        )
 
         if msg_ts:
-            # Replace the progress message with chunk 0, then post the rest.
-            try:
-                await self._slack.web.chat_update(
-                    channel=session.channel_id, ts=msg_ts, text=chunks[0]
-                )
-            except Exception:
-                logger.warning(
-                    "chat_update of first finalize chunk failed; posting fresh instead",
-                    exc_info=True,
-                )
+            # Replace the progress message with chunk 0 under the lock so it
+            # cannot race with an in-flight streaming preview update.
+            async with self._progress_lock(sid):
                 try:
-                    await self._slack.post_text(session.channel_id, chunks[0], session.thread_ts)
+                    await self._slack.web.chat_update(
+                        channel=session.channel_id, ts=msg_ts, text=chunks[0]
+                    )
                 except Exception:
-                    logger.warning("post_text fallback for first chunk failed", exc_info=True)
+                    logger.warning(
+                        "chat_update of first finalize chunk failed; posting fresh instead",
+                        exc_info=True,
+                    )
+                    try:
+                        await self._slack.post_text(session.channel_id, chunks[0], session.thread_ts)
+                    except Exception:
+                        logger.warning("post_text fallback for first chunk failed", exc_info=True)
             rest = chunks[1:]
         else:
             rest = chunks
@@ -136,6 +239,9 @@ class StreamMixin:
 
         # Mark finalized so JSONL watcher won't duplicate
         self._finalized_sessions.add(sid)
+        # Drop the lock — session_id may be reused next turn and we don't
+        # want state from this turn affecting the next.
+        self._progress_locks.pop(sid, None)
 
         if choices:
             blocks = build_options_blocks(choices)
@@ -151,18 +257,43 @@ class StreamMixin:
 
         session = self._session_mgr.get(session_id)
         if not session or not self._slack:
+            logger.info(
+                "jsonl-watcher: dispatch skipped session=%s reason=%s",
+                session_id[:12], "no-session" if not session else "no-slack",
+            )
             return
         if self.is_silenced(session.session_id):
+            logger.info(
+                "jsonl-watcher: dispatch skipped session=%s reason=silenced",
+                session_id[:12],
+            )
             return
         # Skip PROCESS mode (stream events handle it) and finalized turns
         if session.mode == SessionMode.PROCESS.value:
+            logger.info(
+                "jsonl-watcher: dispatch skipped session=%s reason=process-mode",
+                session_id[:12],
+            )
             return
         if session.session_id in self._finalized_sessions:
+            logger.info(
+                "jsonl-watcher: dispatch skipped session=%s reason=finalized",
+                session_id[:12],
+            )
             return
+        logger.info(
+            "jsonl-watcher: dispatch session=%s count=%d",
+            session_id[:12], len(messages),
+        )
 
         for msg in messages:
             if msg.role == "assistant" and msg.text:
-                await self._update_progress(session, "_" + msg.text[:200] + "_")
+                # Leading ● mirrors the TUI's bullet marker so Slack
+                # readers and TUI readers see the same visual shape.
+                # Italicized body marks it as streaming thought.
+                # _update_progress accumulates blocks so earlier reasoning
+                # stays visible instead of being overwritten by the latest.
+                await self._update_progress(session, "● _" + msg.text + "_")
             elif msg.role == "tool_use":
                 detail = ""
                 if msg.tool_name == "Bash":
@@ -183,12 +314,18 @@ class StreamMixin:
         sid = session.session_id
 
         if sid not in self._progress:
+            # Keep schema identical to _start_new_session's pre-seed so the
+            # HOOK-mode _update_progress path (invoked below for tool_use)
+            # doesn't KeyError on _text_blocks/_tool.
             self._progress[sid] = {
                 "msg_ts": None,
                 "last_update": 0,
                 "lines": [],
+                "_text_blocks": [],
+                "_tool": "",
                 "_full_text": "",
                 "_bracket_hold": "",
+                "_finalized": False,
             }
 
         state = self._progress[sid]
@@ -239,14 +376,25 @@ class StreamMixin:
             now = time.time()
             if now - state["last_update"] >= _EDIT_INTERVAL and state["msg_ts"]:
                 preview = new_text[-500:] if len(new_text) > 500 else new_text
-                try:
-                    await self._slack.web.chat_update(
-                        channel=session.channel_id, ts=state["msg_ts"],
-                        text=(preview + _CURSOR)[:_SLACK_MAX_TEXT]
-                    )
-                    state["last_update"] = now
-                except Exception:
-                    logger.debug("Failed to update streaming preview", exc_info=True)
+                async with self._progress_lock(sid):
+                    # Skip if finalize has already sealed the message — a late
+                    # preview here would clobber the complete response with a
+                    # tail-500 snapshot (+ cursor). This is the exact race the
+                    # regression test pins.
+                    if state.get("_finalized"):
+                        logger.info(
+                            "stream: preview skipped post-finalize session=%s",
+                            sid[:12],
+                        )
+                        return
+                    try:
+                        await self._slack.web.chat_update(
+                            channel=session.channel_id, ts=state["msg_ts"],
+                            text=(preview + _CURSOR)[:_SLACK_MAX_TEXT]
+                        )
+                        state["last_update"] = now
+                    except Exception:
+                        logger.debug("Failed to update streaming preview", exc_info=True)
 
         elif evt.raw_type == "assistant" and evt.tool_use:
             tool = evt.tool_use

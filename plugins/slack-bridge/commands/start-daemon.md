@@ -15,7 +15,13 @@ fi
 if curl -s http://127.0.0.1:7778/health 2>/dev/null | grep -q ok; then
     echo "✅ Daemon already running (PID $(cat ~/.claude/slack-bridge/daemon.pid 2>/dev/null))"
 else
-    setsid claude-slack-bridge start >> ~/.claude/slack-bridge/daemon.log 2>&1 < /dev/null &
+    # Detach the daemon so it survives this shell exiting. setsid is
+    # Linux-only; fall back to nohup (portable, works on macOS too).
+    if command -v setsid >/dev/null 2>&1; then
+        setsid claude-slack-bridge start >> ~/.claude/slack-bridge/daemon.log 2>&1 < /dev/null &
+    else
+        nohup claude-slack-bridge start >> ~/.claude/slack-bridge/daemon.log 2>&1 < /dev/null &
+    fi
     sleep 3
     if curl -s http://127.0.0.1:7778/health 2>/dev/null | grep -q ok; then
         echo "✅ Daemon started (PID $(cat ~/.claude/slack-bridge/daemon.pid 2>/dev/null))"

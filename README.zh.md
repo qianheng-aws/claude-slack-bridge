@@ -100,14 +100,16 @@ claude plugins install slack-bridge@qianheng-plugins
 <details>
 <summary><b>Slack 应用配置</b></summary>
 
-1. 在 https://api.slack.com/apps 创建应用
-2. 启用 **Socket Mode**（生成 `xapp-` token）
-3. 添加 **Bot Token Scopes**：`app_mentions:read`、`channels:history`、`channels:read`、`chat:write`、`im:history`、`im:read`、`reactions:write`
-4. **Event Subscriptions** → 订阅 bot 事件：`app_mention`、`message.channels`、`message.im`
-5. **Interactivity** → 启用（用于选项按钮）
-6. **Assistant** → 在 app manifest 中启用 `assistant_view`，添加 `assistant:write` scope
-7. **Event Subscriptions** → 额外订阅：`assistant_thread_started`、`assistant_thread_context_changed`
-8. 安装应用到工作区，邀请 bot 进入频道
+推荐方式 —— **用参考 manifest 一次创建**：
+
+1. 复制 [`docs/slack-manifest.example.yaml`](docs/slack-manifest.example.yaml)
+2. https://api.slack.com/apps → **Create New App** → **From a manifest** → 粘贴
+3. **Install to Workspace**（授权 manifest 中列出的所有 bot scope）
+4. **Basic Information → App-Level Tokens** → 生成一个带 `connections:write` 的 token，这是 `xapp-` token
+5. **OAuth & Permissions** → 复制 Bot User OAuth Token，这是 `xoxb-` token
+6. 把两个 token 填入 `claude-slack-bridge init`
+
+该 manifest 已启用 Socket Mode、Interactivity、Assistant view，并包含 daemon 需要的全部 scope 和事件订阅。如果你想手动配置，也可以对照 manifest 的注释逐项设置。
 
 </details>
 
