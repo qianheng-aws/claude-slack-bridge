@@ -28,7 +28,8 @@ for s in sessions:
         continue  # skip long-idle sessions
     mode_icon = {'process': '🟢', 'hook': '🔵', 'idle': '⚪'}.get(s['mode'], '?')
     flags = []
-    if s.get('muted'): flags.append('🔇muted')
+    level_icon = {'sync': '🔊sync', 'summary': '📝summary', 'ring': '🔕ring'}
+    flags.append(level_icon.get(s.get('mute_level'), '🔇muted'))
     if s.get('trusted'): flags.append('🔓trusted')
     flag_str = ' '.join(flags)
     created = datetime.fromtimestamp(s['created_at']).strftime('%m-%d %H:%M')

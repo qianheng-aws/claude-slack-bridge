@@ -14,6 +14,7 @@ from claude_slack_bridge.conversation_parser import ConversationParser
 from claude_slack_bridge.daemon import Daemon
 from claude_slack_bridge.daemon_http import (
     _maybe_warn_version_mismatch,
+    _read_last_message_from_jsonl,
     _read_last_turn_from_jsonl,
     create_http_app,
 )
@@ -198,6 +199,12 @@ def test_read_last_turn_from_jsonl(tmp_path: Path) -> None:
         assert "Anything else?" in result
         # Should NOT contain the first assistant reply (before the last user msg)
         assert "Hi there" not in result
+
+        # Last-message-only reader (summary mode): ONLY the final block, and
+        # nothing from earlier in the same turn.
+        last = _read_last_message_from_jsonl(ConversationParser(), session_id, cwd)
+        assert last == "Anything else?"
+        assert "The answer is 4." not in last
     finally:
         jsonl_path.unlink(missing_ok=True)
         # Clean up the directory if empty
@@ -208,10 +215,10 @@ def test_read_last_turn_from_jsonl(tmp_path: Path) -> None:
 
 
 def test_read_last_turn_from_jsonl_empty_cwd() -> None:
-    """_read_last_turn_from_jsonl returns empty string for empty cwd."""
+    """Both JSONL readers return empty string for empty cwd."""
     parser = ConversationParser()
-    result = _read_last_turn_from_jsonl(parser, "nonexistent", "")
-    assert result == ""
+    assert _read_last_turn_from_jsonl(parser, "nonexistent", "") == ""
+    assert _read_last_message_from_jsonl(parser, "nonexistent", "") == ""
 
 
 # ── Session lookup by cwd fallback tests ──
@@ -648,3 +655,273 @@ async def test_version_mismatch_silent_when_matching(config: BridgeConfig) -> No
     await _maybe_warn_version_mismatch(daemon, "C1", "t1", "")
 
     assert daemon._slack.post_text.await_count == 0
+
+
+# ── Summary-only mute level ──
+
+
+def test_summary_mute_predicates(config: BridgeConfig) -> None:
+    """summary silences ambient chatter but posts the final answer and rings."""
+    daemon = Daemon(config)
+    daemon.set_mute_level("sum", "summary")
+
+    # Ambient chatter is silenced (like ring)...
+    assert daemon.is_silenced("sum") is True
+    # ...but the final turn answer is posted (like sync)...
+    assert daemon.posts_summary("sum") is True
+    # ...and permission requests still ring Slack.
+    assert daemon.is_fully_muted("sum") is False
+
+    # sync posts summaries too; ring and default-mute do not.
+    daemon.set_mute_level("full", "sync")
+    daemon.set_mute_level("ring", "ring")
+    assert daemon.posts_summary("full") is True
+    assert daemon.posts_summary("ring") is False
+    assert daemon.posts_summary("never-seen") is False
+
+
+async def test_mute_api_accepts_summary(config: BridgeConfig) -> None:
+    """POST /sessions/{id}/mute accepts the new 'summary' level."""
+    daemon = Daemon(config)
+    app = create_http_app(daemon)
+    from aiohttp.test_utils import TestServer, TestClient
+
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/sessions/s1/mute", json={"level": "summary"})
+        assert resp.status == 200
+        assert (await resp.json())["level"] == "summary"
+        assert daemon._mute_levels == {"s1": "summary"}
+
+
+async def test_summary_stop_posts_final_answer_lazy_binds(config: BridgeConfig) -> None:
+    """Under summary mute, Stop lazy-binds a thread and posts ONLY the final
+    assistant message (the wrap-up) — not the intermediate narration, and not
+    ambient chatter.
+    """
+    session_id = "summary-stop-sid"
+    cwd = str(config.config_dir / "proj")
+    project_dir = cwd.replace("/", "-").replace(".", "-")
+    jsonl_dir = Path.home() / ".claude" / "projects" / project_dir
+    jsonl_dir.mkdir(parents=True, exist_ok=True)
+    jsonl_path = jsonl_dir / f"{session_id}.jsonl"
+    # A realistic turn: narration → tool call → wrap-up. Summary mode should
+    # post the wrap-up and drop the narration.
+    jsonl_path.write_text(
+        "\n".join([
+            json.dumps({"type": "user", "message": {"content": "Add 2 and 2"}, "timestamp": "t1"}),
+            json.dumps({"type": "assistant", "message": {"content": "Let me compute that for you."}, "timestamp": "t2"}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "tu1", "name": "Bash", "input": {"command": "echo $((2+2))"}}
+            ]}, "timestamp": "t3"}),
+            json.dumps({"type": "assistant", "message": {"content": "Done — the answer is 4."}, "timestamp": "t4"}),
+        ]) + "\n"
+    )
+
+    daemon = Daemon(config)
+    _mock_slack_for_lazy_bind(daemon)
+    daemon._register_session(session_id, cwd)
+    daemon.set_mute_level(session_id, "summary")
+
+    app = create_http_app(daemon)
+    from aiohttp.test_utils import TestServer, TestClient
+
+    try:
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/hooks/stop", json={
+                "session_key": session_id, "cwd": cwd,
+            })
+            assert resp.status == 200
+
+        # Only the final message was posted — narration is dropped.
+        posted = " ".join(
+            str(c.args[1]) for c in daemon._slack.post_text.await_args_list
+        )
+        assert "Done — the answer is 4." in posted
+        assert "Let me compute that for you." not in posted
+        # Thread was lazy-bound so the answer had somewhere to land.
+        session = daemon._session_mgr.get(session_id)
+        assert session.channel_id == "D1" and session.thread_ts == "ts.auto"
+    finally:
+        jsonl_path.unlink(missing_ok=True)
+        try:
+            jsonl_dir.rmdir()
+        except OSError:
+            pass
+
+
+async def test_full_sync_stop_posts_whole_turn_from_jsonl(config: BridgeConfig) -> None:
+    """Full sync mirrors the whole TUI turn: it reads ALL assistant text blocks
+    from JSONL (JSONL-first), not just the payload's last message.
+    """
+    session_id = "full-sync-sid"
+    cwd = str(config.config_dir / "proj")
+    project_dir = cwd.replace("/", "-").replace(".", "-")
+    jsonl_dir = Path.home() / ".claude" / "projects" / project_dir
+    jsonl_dir.mkdir(parents=True, exist_ok=True)
+    jsonl_path = jsonl_dir / f"{session_id}.jsonl"
+    jsonl_path.write_text(
+        "\n".join([
+            json.dumps({"type": "user", "message": {"content": "Do it"}, "timestamp": "t1"}),
+            json.dumps({"type": "assistant", "message": {"content": "First, the narration."}, "timestamp": "t2"}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "tu1", "name": "Bash", "input": {"command": "ls"}}
+            ]}, "timestamp": "t3"}),
+            json.dumps({"type": "assistant", "message": {"content": "Then, the wrap-up."}, "timestamp": "t4"}),
+        ]) + "\n"
+    )
+
+    daemon = Daemon(config)
+    _mock_slack_for_lazy_bind(daemon)
+    daemon._session_mgr.create(
+        session_id=session_id, session_name="t", channel_id="D1", thread_ts="ts.auto",
+        mode=SessionMode.HOOK,
+    )
+    daemon._session_mgr.get(session_id).cwd = cwd
+    daemon.set_mute_level(session_id, "sync")
+
+    app = create_http_app(daemon)
+    from aiohttp.test_utils import TestServer, TestClient
+
+    try:
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/hooks/stop", json={
+                "session_key": session_id, "cwd": cwd,
+                "response": "payload-last-message-should-be-ignored",
+            })
+            assert resp.status == 200
+
+        posted = " ".join(
+            str(c.args[1]) for c in daemon._slack.post_text.await_args_list
+        )
+        # Whole turn from JSONL — both narration and wrap-up...
+        assert "First, the narration." in posted
+        assert "Then, the wrap-up." in posted
+        # ...and the payload fallback is NOT used when JSONL has content.
+        assert "payload-last-message-should-be-ignored" not in posted
+    finally:
+        jsonl_path.unlink(missing_ok=True)
+        try:
+            jsonl_dir.rmdir()
+        except OSError:
+            pass
+
+
+async def test_summary_stop_prefers_payload_over_stale_jsonl(config: BridgeConfig) -> None:
+    """Regression: at Stop, Claude Code may not have flushed the final assistant
+    text block to JSONL yet, so a JSONL read returns the *previous* block (the
+    mid-turn narration). Summary mode must prefer the Stop hook payload's
+    ``response`` (== last_assistant_message), which is authoritative.
+    """
+    session_id = "summary-race-sid"
+    cwd = str(config.config_dir / "proj")
+    project_dir = cwd.replace("/", "-").replace(".", "-")
+    jsonl_dir = Path.home() / ".claude" / "projects" / project_dir
+    jsonl_dir.mkdir(parents=True, exist_ok=True)
+    jsonl_path = jsonl_dir / f"{session_id}.jsonl"
+    # JSONL is missing the true final block (not yet flushed) — its last
+    # assistant text is the mid-turn narration.
+    jsonl_path.write_text(
+        "\n".join([
+            json.dumps({"type": "user", "message": {"content": "Do the thing"}, "timestamp": "t1"}),
+            json.dumps({"type": "assistant", "message": {"content": "Now let me read the implementation."}, "timestamp": "t2"}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "tu1", "name": "Read", "input": {"file_path": "x.rs"}}
+            ]}, "timestamp": "t3"}),
+        ]) + "\n"
+    )
+
+    daemon = Daemon(config)
+    _mock_slack_for_lazy_bind(daemon)
+    daemon._register_session(session_id, cwd)
+    daemon.set_mute_level(session_id, "summary")
+
+    app = create_http_app(daemon)
+    from aiohttp.test_utils import TestServer, TestClient
+
+    try:
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/hooks/stop", json={
+                "session_key": session_id, "cwd": cwd,
+                # Hook script normalizes last_assistant_message → response.
+                "response": "I have the full picture. The answer is no timeout needed.",
+            })
+            assert resp.status == 200
+
+        posted = " ".join(
+            str(c.args[1]) for c in daemon._slack.post_text.await_args_list
+        )
+        # The authoritative payload message wins...
+        assert "I have the full picture." in posted
+        # ...not the stale mid-turn narration from the un-flushed JSONL.
+        assert "Now let me read the implementation." not in posted
+    finally:
+        jsonl_path.unlink(missing_ok=True)
+        try:
+            jsonl_dir.rmdir()
+        except OSError:
+            pass
+
+
+async def test_summary_mute_echoes_user_prompt_but_no_progress_chatter(
+    config: BridgeConfig,
+) -> None:
+    """Summary mode posts the user's prompt (so the thread is a Q&A log) but
+    still suppresses ambient chatter like the 'is working' thread status.
+    """
+    daemon = Daemon(config)
+    daemon._slack = MagicMock()
+    daemon._slack.post_text = AsyncMock()
+    daemon._slack.set_thread_status = AsyncMock()
+    daemon._session_mgr.create(
+        session_id="s1", session_name="t", channel_id="C1", thread_ts="1.0",
+        mode=SessionMode.HOOK,
+    )
+    daemon.set_mute_level("s1", "summary")
+
+    app = create_http_app(daemon)
+    from aiohttp.test_utils import TestServer, TestClient
+
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/hooks/user-prompt", json={
+            "session_key": "s1", "prompt": "do the thing", "cwd": "/tmp",
+        })
+        assert resp.status == 200
+
+    # The prompt IS echoed (Q&A log)...
+    posted = " ".join(
+        str(c.args[1]) for c in daemon._slack.post_text.await_args_list
+    )
+    assert "do the thing" in posted
+    assert "User:" in posted
+    # ...but no "is working" progress chatter fires in summary mode.
+    daemon._slack.set_thread_status.assert_not_awaited()
+
+
+async def test_summary_mute_skips_forwarded_and_system_prompts(config: BridgeConfig) -> None:
+    """Summary echo skips Slack→tmux forwarded prompts (dup) and system msgs."""
+    daemon = Daemon(config)
+    daemon._slack = MagicMock()
+    daemon._slack.post_text = AsyncMock()
+    daemon._slack.set_thread_status = AsyncMock()
+    daemon._session_mgr.create(
+        session_id="s1", session_name="t", channel_id="C1", thread_ts="1.0",
+        mode=SessionMode.HOOK,
+    )
+    daemon.set_mute_level("s1", "summary")
+    # Mimic a prompt already forwarded from Slack — should not be echoed back.
+    daemon._forwarded_prompts.add("forwarded from slack")
+
+    app = create_http_app(daemon)
+    from aiohttp.test_utils import TestServer, TestClient
+
+    async with TestClient(TestServer(app)) as client:
+        r1 = await client.post("/hooks/user-prompt", json={
+            "session_key": "s1", "prompt": "forwarded from slack", "cwd": "/tmp",
+        })
+        r2 = await client.post("/hooks/user-prompt", json={
+            "session_key": "s1", "prompt": "<system-reminder>noise</system-reminder>", "cwd": "/tmp",
+        })
+        assert r1.status == 200 and r2.status == 200
+
+    # Neither the forwarded echo nor the system message reaches Slack.
+    daemon._slack.post_text.assert_not_awaited()
