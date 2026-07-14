@@ -210,6 +210,26 @@ def main():
             }
             print(json.dumps(output))
             sys.exit(0)
+        elif decision == "answered":
+            # AskUserQuestion answered from Slack: allow with updatedInput
+            # carrying selectedOptions, so CC skips its own dialog and
+            # proceeds with the chosen option. Without updated_input the
+            # answer is unusable — fall through to the TUI dialog instead
+            # of allowing with an empty (= discarded) answer.
+            updated = extra.get("updated_input")
+            if not updated:
+                sys.exit(0)
+            output = {
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": {
+                        "behavior": "allow",
+                        "updatedInput": updated,
+                    },
+                }
+            }
+            print(json.dumps(output))
+            sys.exit(0)
         elif decision == "trusted":
             # Trust = allow this invocation AND persist a rule via CC's
             # updatedPermissions so future matching calls don't even

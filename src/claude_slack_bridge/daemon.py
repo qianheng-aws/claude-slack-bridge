@@ -80,6 +80,11 @@ class Daemon(StreamMixin, EventsMixin):
         self._forwarded_prompts: set[str] = set()
         # Pending approval messages: session_id -> msg_ts (for cleanup on TUI approval)
         self._pending_approval_msgs: dict[str, str] = {}
+        # Pending AskUserQuestion requests: session_id -> request_id. Lets a
+        # thread reply act as a free-text answer (Slack's counterpart of the
+        # TUI dialog's "Type something" / "Chat about this" rows, which CC
+        # adds client-side and never includes in the hook's options list).
+        self._pending_questions: dict[str, str] = {}
         # Live TodoWrite messages: session_id -> msg_ts (updated in place)
         self._todo_msgs: dict[str, str] = {}
         # Sessions that have been finalized this turn — JSONL watcher skips these
@@ -230,9 +235,28 @@ class Daemon(StreamMixin, EventsMixin):
             on_exit=self._on_process_exit,
         )
 
-    async def _resume_process(self, session: Session, text: str | None) -> None:
+    async def _resume_process(
+        self, session: Session, text: str | None,
+        reaction_controller: StatusReactionController | None = None,
+    ) -> None:
         self._session_mgr.set_mode(session.session_id, SessionMode.PROCESS)
         cwd = session.cwd or self._config.work_dir
+        # Seed progress state so the stream handler drives the reaction
+        # controller (thinking/coding/done). --print subprocesses suppress
+        # hooks (CLAUDE_SLACK_BRIDGE_PRINT=1), so without this seed the
+        # controller would never be finalized: stuck 👀 + false stall 😰.
+        if reaction_controller:
+            self._progress[session.session_id] = {
+                "msg_ts": None,
+                "last_update": 0,
+                "lines": [],
+                "_text_blocks": [],
+                "_tool": "",
+                "_full_text": "",
+                "_bracket_hold": "",
+                "_reactions": reaction_controller,
+                "_finalized": False,
+            }
         await self._pool.start(
             session_id=session.session_id,
             prompt=text,
@@ -329,12 +353,22 @@ class Daemon(StreamMixin, EventsMixin):
         if not self._slack:
             return False
         try:
-            resp = await self._slack.web.conversations_list(types="im", limit=1)
-            ims = resp.get("channels", [])
-            if not ims:
-                logger.warning("No DM channel found for lazy bind")
-                return False
-            dm_channel = ims[0]["id"]
+            dm_channel = ""
+            # Prefer the configured owner's DM. conversations_list(limit=1)
+            # returns "some IM the bot has" — in a shared workspace that can
+            # be another user's DM, leaking session content to them.
+            if self._config.owner_user_id:
+                resp = await self._slack.web.conversations_open(
+                    users=self._config.owner_user_id
+                )
+                dm_channel = resp.get("channel", {}).get("id", "")
+            if not dm_channel:
+                resp = await self._slack.web.conversations_list(types="im", limit=1)
+                ims = resp.get("channels", [])
+                if not ims:
+                    logger.warning("No DM channel found for lazy bind")
+                    return False
+                dm_channel = ims[0]["id"]
 
             directory = session.cwd or self._config.work_dir
             blocks = build_session_header_blocks(

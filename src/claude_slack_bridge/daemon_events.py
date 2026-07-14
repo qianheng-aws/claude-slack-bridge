@@ -6,6 +6,7 @@ Provides EventsMixin which is mixed into the Daemon class.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 from slack_sdk.socket_mode.aiohttp import SocketModeClient
@@ -15,6 +16,7 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from claude_slack_bridge.reactions import StatusReactionController
 from claude_slack_bridge.session_manager import SessionMode
 from claude_slack_bridge.slack_formatter import (
+    ASK_ACTION_PREFIX,
     OPTIONS_ACTION_PREFIX,
     build_approval_resolved_blocks,
     build_session_header_blocks,
@@ -171,13 +173,12 @@ class EventsMixin:
         session = self._session_mgr.find_by_thread(channel_id, thread_ts)
         if not session:
             return
-
-        rc = StatusReactionController(self._slack, channel_id, msg_ts, asyncio.get_event_loop())
-        await rc.set_phase("queued")
-        # Store so hooks (PostToolUse, Stop) can update phase
-        self._reaction_controllers[session.session_id] = rc
         session.touch()
 
+        # Commands and the approval reminder below answer instantly — arming
+        # the reaction watchdog for them leaves an orphaned controller whose
+        # 45s stall timer fires :cold_sweat: on an already-answered message.
+        # Only real forwarded prompts get a controller (created further down).
         lower = text.strip().lower()
         if lower in ("!stop", "stop"):
             cp = self._pool.get(session.session_id)
@@ -215,6 +216,37 @@ class EventsMixin:
             await self._slack.post_text(channel_id, "\U0001f515 TUI chatter muted — Slack approvals still active", thread_ts)
             return
 
+        # Pending QUESTION: a plain thread reply is the free-text answer —
+        # Slack's counterpart of the TUI dialog's "Type something" / "Chat
+        # about this" rows (which CC adds client-side; they never appear in
+        # the hook's options list, so buttons can't cover them).
+        pending_q = self._pending_questions.get(session.session_id)
+        if pending_q:
+            state = self._approval_mgr.get(pending_q)
+            free_text = text.strip()
+            if state is not None and free_text:
+                answered = {
+                    "questions": state.tool_input.get("questions", []),
+                    # `response` = freeform text the user typed instead of
+                    # picking an option (verified live against CC 2.1.208).
+                    "response": free_text,
+                }
+                if state.resolve("answered", answered_input=answered):
+                    msg_ts_q = self._pending_approval_msgs.get(session.session_id)
+                    if msg_ts_q:
+                        try:
+                            await self._slack.web.chat_update(
+                                channel=channel_id, ts=msg_ts_q,
+                                text="\u2705 Answered: _" + free_text[:200] + "_",
+                                blocks=[],
+                            )
+                        except Exception:
+                            logger.warning("Failed to update question message", exc_info=True)
+                    return
+            # State gone or already resolved — drop the stale marker and
+            # handle the reply normally below.
+            self._pending_questions.pop(session.session_id, None)
+
         # Check for pending approval — remind user instead of forwarding
         if session.session_id in self._pending_approval_msgs:
             await self._slack.post_text(
@@ -224,8 +256,18 @@ class EventsMixin:
             )
             return
 
+        rc = StatusReactionController(self._slack, channel_id, msg_ts, asyncio.get_event_loop())
+        await rc.set_phase("queued")
+        # Store so hooks (PostToolUse, Stop) can update phase. Finalize any
+        # controller left over from a previous turn first, so its timers die
+        # and its emoji don't linger on the old message.
+        prev_rc = self._reaction_controllers.pop(session.session_id, None)
+        if prev_rc:
+            asyncio.ensure_future(prev_rc.finalize())
+        self._reaction_controllers[session.session_id] = rc
+
         if session.mode == SessionMode.PROCESS.value:
-            await self._resume_process(session, text)
+            await self._resume_process(session, text, reaction_controller=rc)
         elif session.origin == "tui":
             # TUI-originated session: try tmux send-keys to the exact
             # bound pane. No cwd fallback — see tmux_controller.
@@ -244,10 +286,10 @@ class EventsMixin:
                     thread_ts,
                 )
                 session.origin = "slack"
-                await self._resume_process(session, text)
+                await self._resume_process(session, text, reaction_controller=rc)
         else:
             # Slack-originated session: always use --print
-            await self._resume_process(session, text)
+            await self._resume_process(session, text, reaction_controller=rc)
 
     async def _handle_interactive(self, action: dict, payload: dict) -> None:
         action_id = action.get("action_id", "")
@@ -283,11 +325,66 @@ class EventsMixin:
                     await self._slack.update_blocks(channel_id, msg_ts, blocks, text="\U0001f6ab Rejected")
                 except Exception:
                     logger.warning("Failed to update reject message", exc_info=True)
+        elif action_id.startswith(ASK_ACTION_PREFIX):
+            # AskUserQuestion option click. value = "{request_id}:{index}".
+            request_id, _, idx_str = value.rpartition(":")
+            state = self._approval_mgr.get(request_id)
+            if state is None:
+                # Timed out / already resolved — tell the user instead of
+                # silently ignoring the click.
+                if self._slack and channel_id and msg_ts:
+                    try:
+                        await self._slack.web.chat_update(
+                            channel=channel_id, ts=msg_ts,
+                            text="⌛ _This question has expired — answer in the TUI._",
+                            blocks=[],
+                        )
+                    except Exception:
+                        logger.warning("Failed to update expired question", exc_info=True)
+                return
+            try:
+                idx = int(idx_str)
+                questions = state.tool_input.get("questions", [])
+                question_text = questions[0].get("question", "")
+                option = questions[0]["options"][idx]
+                label = option.get("label", "")
+            except (ValueError, IndexError, KeyError, TypeError):
+                logger.warning("Bad ask_option payload: %r", value)
+                return
+            # Build updatedInput in the shape CC's AskUserQuestion schema
+            # actually consumes (verified against a live TUI, v2.1.208):
+            # `answers` maps question text -> chosen option label. The
+            # documented `selectedOptions` field is silently ignored and
+            # yields "The user did not answer the questions."
+            answered = {
+                "questions": questions,
+                "answers": {question_text: label},
+            }
+            state.resolve("answered", answered_input=answered)
+            if self._slack and channel_id and msg_ts:
+                try:
+                    await self._slack.web.chat_update(
+                        channel=channel_id, ts=msg_ts,
+                        text="✅ Answered: *" + label + "*", blocks=[],
+                    )
+                except Exception:
+                    logger.warning("Failed to update question message", exc_info=True)
         elif action_id.startswith(OPTIONS_ACTION_PREFIX):
             thread_ts = msg.get("thread_ts", msg_ts)
             if channel_id and thread_ts:
                 session = self._session_mgr.find_by_thread(channel_id, thread_ts)
                 if session:
+                    # Same guard as _handle_thread_reply: while an approval
+                    # is pending, a button click must not spawn a competing
+                    # --print process against the blocked session.
+                    if session.session_id in self._pending_approval_msgs:
+                        if self._slack:
+                            await self._slack.post_text(
+                                channel_id,
+                                "⚠️ _Waiting for tool approval above. Please Approve or Reject before continuing._",
+                                thread_ts,
+                            )
+                        return
                     await self._resume_process(session, value)
                     if self._slack and msg_ts:
                         try:

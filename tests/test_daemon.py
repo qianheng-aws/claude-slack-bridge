@@ -1245,6 +1245,96 @@ async def test_post_tool_use_clears_pending_approval_card_under_ring_mute(
     assert "sid-ring" not in daemon._pending_approval_msgs
 
 
+async def test_stop_finalizes_reaction_controller_under_summary_mute(
+    config: BridgeConfig,
+) -> None:
+    """Regression: the stall-watchdog cold_sweat bug.
+
+    A Slack thread reply creates a StatusReactionController regardless of
+    mute level (daemon_events._handle_thread_reply), but the Stop hook only
+    finalized it inside the `if not is_silenced(...)` branch — which summary
+    and ring modes never enter. The controller was left armed: its 45s
+    watchdog fired :cold_sweat: on an already-answered message, and the
+    :lobster: done emoji never appeared.
+    """
+    daemon = Daemon(config)
+    session = daemon._session_mgr.create(
+        session_id="sid-sum-stop", session_name="t",
+        channel_id="D1", thread_ts="ts.root", mode=SessionMode.HOOK,
+    )
+    session.cwd = "/tmp"
+    daemon.set_mute_level("sid-sum-stop", "summary")
+
+    daemon._slack = MagicMock()
+    daemon._slack.post_text = AsyncMock()
+    daemon._slack.set_thread_status = AsyncMock()
+
+    rc = MagicMock()
+    rc.finalize = AsyncMock()
+    daemon._reaction_controllers["sid-sum-stop"] = rc
+
+    app = create_http_app(daemon)
+    from aiohttp.test_utils import TestServer, TestClient
+
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/hooks/stop", json={
+            "session_key": "sid-sum-stop", "cwd": "/tmp",
+            "response": "the answer",
+        })
+        assert resp.status == 200
+        # finalize is scheduled via ensure_future — let it run.
+        await asyncio.sleep(0)
+
+    rc.finalize.assert_called_once_with(error=False)
+    # Controller must be popped so it can't leak across turns.
+    assert "sid-sum-stop" not in daemon._reaction_controllers
+
+
+async def test_post_tool_use_feeds_reaction_watchdog_under_summary_mute(
+    config: BridgeConfig,
+) -> None:
+    """Companion regression: post-tool-use must reset the stall watchdog
+    (on_progress) and update the phase emoji for silenced sessions too —
+    otherwise the watchdog measures "time since the user's message" instead
+    of "time without progress" and false-fires on any turn longer than 15s.
+    Thread-status chatter must still stay suppressed.
+    """
+    daemon = Daemon(config)
+    session = daemon._session_mgr.create(
+        session_id="sid-sum-ptu", session_name="t",
+        channel_id="D1", thread_ts="ts.root", mode=SessionMode.HOOK,
+    )
+    session.cwd = "/tmp"
+    daemon.set_mute_level("sid-sum-ptu", "summary")
+
+    daemon._slack = MagicMock()
+    daemon._slack.post_text = AsyncMock()
+    daemon._slack.set_thread_status = AsyncMock()
+
+    rc = MagicMock()
+    rc.set_phase = AsyncMock()
+    daemon._reaction_controllers["sid-sum-ptu"] = rc
+
+    app = create_http_app(daemon)
+    from aiohttp.test_utils import TestServer, TestClient
+
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/hooks/post-tool-use", json={
+            "session_key": "sid-sum-ptu",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "tool_output": "",
+            "cwd": "/tmp",
+        })
+        assert resp.status == 200
+        await asyncio.sleep(0)
+
+    rc.set_phase.assert_called_once_with("coding")
+    rc.on_progress.assert_called_once_with()
+    # Ambient chatter stays suppressed under summary mute.
+    daemon._slack.set_thread_status.assert_not_awaited()
+
+
 # ── _strip_wrapper_blocks unit tests ──
 
 

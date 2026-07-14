@@ -20,10 +20,14 @@ class ApprovalState:
         self.tool_input = tool_input or {}
         self.cwd = cwd
         self.session_id = session_id
-        self.status: str = "pending"  # pending | approved | trusted | rejected | timed_out
+        # pending | approved | trusted | rejected | answered | timed_out
+        self.status: str = "pending"
         self.trust_tool_name: str = ""
         self.trust_rule_content: str | None = None
         self.trust_destination: str = "projectSettings"
+        # For AskUserQuestion: the full updatedInput (questions with
+        # selectedOptions) to hand back to Claude Code.
+        self.answered_input: dict | None = None
         self._event = asyncio.Event()
         self._resolved = False
 
@@ -34,6 +38,7 @@ class ApprovalState:
         trust_tool_name: str = "",
         trust_rule_content: str | None = None,
         trust_destination: str = "projectSettings",
+        answered_input: dict | None = None,
     ) -> bool:
         """Atomically resolve. Returns True if this was the first resolution."""
         if self._resolved:
@@ -44,6 +49,8 @@ class ApprovalState:
             self.trust_tool_name = trust_tool_name
             self.trust_rule_content = trust_rule_content
             self.trust_destination = trust_destination
+        if decision == "answered":
+            self.answered_input = answered_input
         self._event.set()
         return True
 

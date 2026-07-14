@@ -20,8 +20,10 @@ logger = logging.getLogger("claude_slack_bridge")
 from claude_slack_bridge.session_manager import SessionMode
 from claude_slack_bridge.slack_formatter import (
     SLACK_MSG_LIMIT,
+    ask_user_question_shape,
     build_approval_blocks,
     build_approval_resolved_blocks,
+    build_question_blocks,
     build_tool_notification_blocks,
     build_user_prompt_blocks,
 )
@@ -501,6 +503,25 @@ def create_http_app(daemon) -> web.Application:
                 except Exception:
                     logger.warning("Failed to update approval message", exc_info=True)
 
+        # Reaction-controller updates must run at every mute level: the
+        # controller is created whenever a Slack thread reply is forwarded
+        # (daemon_events._handle_thread_reply), regardless of mute. When
+        # these lived inside the sync-only branch below, summary/ring
+        # sessions never fed the stall watchdog (on_progress) nor finalized
+        # the controller — so :cold_sweat: false-fired 45s after the user's
+        # message and the :lobster: done emoji never replaced it.
+        if hook_type == "post-tool-use":
+            rc = daemon._reaction_controllers.get(session.session_id)
+            if rc:
+                from claude_slack_bridge.reactions import tool_to_phase
+                phase = tool_to_phase(payload.get("tool_name", ""))
+                asyncio.ensure_future(rc.set_phase(phase))
+                rc.on_progress()
+        elif hook_type == "stop":
+            rc = daemon._reaction_controllers.pop(session.session_id, None)
+            if rc:
+                asyncio.ensure_future(rc.finalize(error=False))
+
         # Sync TUI content to Slack (unless silenced by any mute level).
         # Permission-request has its own gate (is_fully_muted) downstream.
         if not daemon.is_silenced(session.session_id):
@@ -523,13 +544,6 @@ def create_http_app(daemon) -> web.Application:
                 tool_name = payload.get("tool_name", "")
                 tool_input = payload.get("tool_input", {})
 
-                # Update phase-aware reaction + thread status
-                rc = daemon._reaction_controllers.get(session.session_id)
-                if rc:
-                    from claude_slack_bridge.reactions import tool_to_phase
-                    phase = tool_to_phase(tool_name)
-                    asyncio.ensure_future(rc.set_phase(phase))
-                    rc.on_progress()
                 await daemon._slack.set_thread_status(
                     session.channel_id, session.thread_ts, f"is using {tool_name}"
                 )
@@ -555,10 +569,6 @@ def create_http_app(daemon) -> web.Application:
                 await daemon._slack.set_thread_status(
                     session.channel_id, session.thread_ts, ""
                 )
-                # Finalize reaction controller (eyes → lobster/error)
-                rc = daemon._reaction_controllers.pop(session.session_id, None)
-                if rc:
-                    asyncio.ensure_future(rc.finalize(error=False))
 
                 # PROCESS mode already finalizes via _on_stream_event result.
                 # HOOK/IDLE modes: read JSONL for full turn, overwrite progress.
@@ -716,16 +726,22 @@ def create_http_app(daemon) -> web.Application:
 
         session = daemon._session_mgr.get(session_key)
 
+        # AskUserQuestion is a QUESTION, not a permission: "approving" it
+        # (YOLO, auto-approve list, no-slack fallback) makes CC proceed with
+        # an EMPTY answer, silently discarding the user's decision. It's
+        # either answered from Slack (below) or handed to the TUI dialog.
+        is_question = tool_name == "AskUserQuestion"
+
         # Fast-path: YOLO / trusted session
-        if session and session.session_id in daemon._trusted_sessions:
+        if not is_question and session and session.session_id in daemon._trusted_sessions:
             return web.Response(text="approved")
 
         # Fast-path: safe tools
-        if tool_name in daemon._config.auto_approve_tools:
+        if not is_question and tool_name in daemon._config.auto_approve_tools:
             return web.Response(text="approved")
 
         if not daemon._slack:
-            return web.Response(text="approved")
+            return web.Response(text="" if is_question else "approved")
 
         # Register session (no Slack thread yet) so we can check mute level.
         if not session:
@@ -747,10 +763,16 @@ def create_http_app(daemon) -> web.Application:
         if daemon.is_fully_muted(session.session_id):
             return web.Response(text="")
 
+        # Questions we can't render as one row of buttons (multi-question,
+        # multiSelect, malformed) go straight to the TUI dialog.
+        question = ask_user_question_shape(tool_input) if is_question else None
+        if is_question and question is None:
+            return web.Response(text="")
+
         # Ring/sync mute: lazy-create the DM thread now so approval
         # buttons have somewhere to land.
         if not await daemon._ensure_slack_thread(session):
-            return web.Response(text="approved")
+            return web.Response(text="" if is_question else "approved")
 
         # Seal the in-flight progress message so approval buttons land
         # below the current stream (see PROCESS-mode site above for why).
@@ -759,26 +781,36 @@ def create_http_app(daemon) -> web.Application:
         # Thread status: waiting for approval
         await daemon._slack.set_thread_status(
             session.channel_id, session.thread_ts,
-            f"Waiting for approval \u2014 {tool_name}..."
+            "Waiting for your answer..." if is_question
+            else f"Waiting for approval \u2014 {tool_name}..."
         )
 
-        # Post approval buttons
+        # Post approval buttons (or, for AskUserQuestion, option buttons)
         request_id = str(uuid.uuid4())
-        blocks = build_approval_blocks(
-            tool_name=tool_name,
-            tool_input=tool_input,
-            session_id=session.session_id,
-            session_name=session.session_name,
-            request_id=request_id,
-        )
+        if question is not None:
+            blocks = build_question_blocks(question, request_id)
+            fallback_text = f"\u2753 {question.get('question', 'Claude has a question')[:150]}"
+        else:
+            blocks = build_approval_blocks(
+                tool_name=tool_name,
+                tool_input=tool_input,
+                session_id=session.session_id,
+                session_name=session.session_name,
+                request_id=request_id,
+            )
+            fallback_text = f"\U0001f510 Approve {tool_name}?"
         approval_msg_ts = await daemon._slack.post_blocks(
             session.channel_id,
             blocks,
-            f"\U0001f510 Approve {tool_name}?",
+            fallback_text,
             session.thread_ts,
         )
         # Track for cleanup if TUI approves before Slack click
         daemon._pending_approval_msgs[session.session_id] = approval_msg_ts
+        if question is not None:
+            # Let a plain thread reply answer the question as free text
+            # (Slack's counterpart of the TUI's "Type something").
+            daemon._pending_questions[session.session_id] = request_id
 
         # Block until Slack button click or timeout
         state = daemon._approval_mgr.create(
@@ -793,6 +825,7 @@ def create_http_app(daemon) -> web.Application:
         )
         daemon._approval_mgr.cleanup(request_id)
         daemon._pending_approval_msgs.pop(session.session_id, None)
+        daemon._pending_questions.pop(session.session_id, None)
 
         # Clear thread status after approval
         await daemon._slack.set_thread_status(
@@ -806,6 +839,15 @@ def create_http_app(daemon) -> web.Application:
                 "rule_content": state.trust_rule_content,
                 "destination": state.trust_destination,
             })
+        if result == "answered":
+            return web.json_response({
+                "decision": "answered",
+                "updated_input": state.answered_input,
+            })
+        if is_question:
+            # Timeout / anything unresolved: hand back to the TUI dialog
+            # rather than reporting a decision CC would treat as allow/deny.
+            return web.Response(text="")
         return web.json_response({"decision": result})
 
     app = web.Application()

@@ -12,6 +12,7 @@ CONTINUATION = "\n\n_(continued...)_"
 
 _OPTIONS_RE = re.compile(r"\[OPTIONS:\s*(.+?)\]\s*$", re.MULTILINE)
 OPTIONS_ACTION_PREFIX = "options_choice_"
+ASK_ACTION_PREFIX = "ask_option_"
 
 # ── Markdown → Slack mrkdwn patterns ──
 
@@ -229,10 +230,19 @@ def _strip_ansi(text: str) -> str:
 
 
 def extract_options(text: str) -> tuple[str, list[str]]:
-    """Extract [OPTIONS: A | B | C] from text. Returns (cleaned_text, choices)."""
-    m = _OPTIONS_RE.search(text)
-    if not m:
+    """Extract [OPTIONS: A | B | C] from text. Returns (cleaned_text, choices).
+
+    Only a marker that ends the response is treated as options. The regex is
+    MULTILINE, so a bracket that merely *mentions* OPTIONS mid-text (e.g. the
+    model explaining its own format) would otherwise match first and
+    `text[:m.start()]` would silently drop everything after it.
+    """
+    matches = list(_OPTIONS_RE.finditer(text))
+    if not matches:
         return text, []
+    m = matches[-1]
+    if text[m.end():].strip():
+        return text, []  # marker mid-text, not a trailing options block
     choices = [c.strip() for c in m.group(1).split("|") if c.strip()]
     return text[: m.start()].rstrip(), choices
 
@@ -402,6 +412,81 @@ def build_approval_blocks(
             ],
         },
     ]
+
+
+def ask_user_question_shape(tool_input: dict) -> dict | None:
+    """Return the single question dict if this AskUserQuestion call is a
+    shape we can answer from Slack: exactly one question, 2+ options,
+    not multiSelect. Anything else → None (fall through to the TUI dialog,
+    where CC's native UI handles it properly)."""
+    questions = tool_input.get("questions")
+    if not isinstance(questions, list) or len(questions) != 1:
+        return None
+    q = questions[0]
+    if not isinstance(q, dict) or q.get("multiSelect"):
+        return None
+    options = q.get("options")
+    if not isinstance(options, list) or len(options) < 2:
+        return None
+    if not all(isinstance(o, dict) and o.get("label") for o in options):
+        return None
+    return q
+
+
+def build_question_blocks(question: dict, request_id: str) -> list[dict]:
+    """Render an AskUserQuestion as question text + one button per option.
+
+    Button value carries ``{request_id}:{option_index}`` — the index (not the
+    label) survives Slack's 2000-char value limit and avoids any label-
+    escaping round-trip. Labels are truncated to Slack's 75-char button cap;
+    full labels stay readable in the numbered listing above the buttons.
+    """
+    header = question.get("header", "") or "Question"
+    options = question.get("options", [])
+    listing = "\n".join(
+        f"*{i + 1}.* {o.get('label', '')}" +
+        (f" — {o['description']}" if o.get("description") else "")
+        for i, o in enumerate(options)
+    )
+    # Mirror the TUI dialog's trailing free-text rows ("Type something" /
+    # "Chat about this"). They're not real options — CC's TUI adds them
+    # client-side — so in Slack they map to "reply in this thread", which
+    # the thread-reply handler turns into the freeform `response` answer.
+    free_text_row = (
+        f"*{len(options) + 1}.* 💬 Type something — "
+        "_reply in this thread to answer with your own text_"
+    )
+    blocks: list[dict] = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"❓ *{header}*\n"
+                    f"{truncate_text(question.get('question', ''), 2000)}\n\n"
+                    f"{truncate_text(listing, 900)}\n"
+                    f"{free_text_row}"
+                ),
+            },
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": (o.get("label", "")[:_BUTTON_TEXT_LIMIT]
+                                 or f"Option {i + 1}"),
+                    },
+                    "action_id": f"{ASK_ACTION_PREFIX}{i}",
+                    "value": f"{request_id}:{i}",
+                }
+                for i, o in enumerate(question.get("options", [])[:5])
+            ],
+        },
+    ]
+    return blocks
 
 
 def build_tool_notification_blocks(
