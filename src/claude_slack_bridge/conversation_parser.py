@@ -27,11 +27,27 @@ class ChatMessage:
     timestamp: str = ""
 
 
+# Consumers only ever read the last turn (everything after the last user
+# message), so retaining a bounded tail is enough. Without a cap, a
+# long-lived daemon accumulates every message of every session forever.
+_MAX_KEPT_MESSAGES = 500
+
+
 @dataclass
 class _ParseState:
     last_offset: int = 0
     messages: list[ChatMessage] = field(default_factory=list)
     seen_tool_ids: set[str] = field(default_factory=set)
+
+    def trim(self) -> None:
+        if len(self.messages) > _MAX_KEPT_MESSAGES:
+            del self.messages[: len(self.messages) - _MAX_KEPT_MESSAGES]
+        if len(self.seen_tool_ids) > 4 * _MAX_KEPT_MESSAGES:
+            # Ids of trimmed messages can't recur (JSONL is append-only,
+            # tool ids are unique), so resetting the set is safe.
+            self.seen_tool_ids = {
+                m.tool_use_id for m in self.messages if m.tool_use_id
+            }
 
 
 def _session_file_path(session_id: str, cwd: str) -> str:
@@ -69,14 +85,14 @@ class ConversationParser:
                     line = line.strip()
                     if not line:
                         continue
-                    msg = self._parse_line(line, state)
-                    if msg:
-                        new_messages.append(msg)
-                        state.messages.append(msg)
+                    msgs = self._parse_line(line, state)
+                    new_messages.extend(msgs)
+                    state.messages.extend(msgs)
                 state.last_offset = f.tell()
         except (OSError, UnicodeDecodeError):
             pass
 
+        state.trim()
         return new_messages
 
     def get_all_messages(self, session_id: str) -> list[ChatMessage]:
@@ -86,15 +102,21 @@ class ConversationParser:
     def reset(self, session_id: str) -> None:
         self._states.pop(session_id, None)
 
-    def _parse_line(self, line: str, state: _ParseState) -> Optional[ChatMessage]:
+    def _parse_line(self, line: str, state: _ParseState) -> list[ChatMessage]:
+        """Parse one JSONL record into ChatMessages.
+
+        Returns a list: an assistant record can carry several content blocks
+        (text + tool_use, or multiple parallel tool_use). Returning only the
+        first block dropped the rest from the progress stream.
+        """
         try:
             j = json.loads(line)
         except json.JSONDecodeError:
-            return None
+            return []
 
         msg_type = j.get("type")
         if j.get("isMeta"):
-            return None
+            return []
 
         message = j.get("message", {})
         ts = j.get("timestamp", "")
@@ -103,35 +125,36 @@ class ConversationParser:
             content = message.get("content", "")
             if isinstance(content, str):
                 if content.startswith(("<command-name>", "<local-command", "Caveat:")):
-                    return None
-                return ChatMessage(role="user", text=content, timestamp=ts)
+                    return []
+                return [ChatMessage(role="user", text=content, timestamp=ts)]
 
         elif msg_type == "assistant":
             content = message.get("content")
             if isinstance(content, str):
-                return ChatMessage(role="assistant", text=content, timestamp=ts)
+                return [ChatMessage(role="assistant", text=content, timestamp=ts)]
             elif isinstance(content, list):
-                # Extract text blocks and tool_use blocks
+                out: list[ChatMessage] = []
                 for block in content:
                     btype = block.get("type")
                     if btype == "text":
                         text = block.get("text", "")
                         if text and not text.startswith("[Request interrupted"):
-                            return ChatMessage(role="assistant", text=text, timestamp=ts)
+                            out.append(ChatMessage(role="assistant", text=text, timestamp=ts))
                     elif btype == "tool_use":
                         tid = block.get("id", "")
                         if tid in state.seen_tool_ids:
                             continue
                         state.seen_tool_ids.add(tid)
-                        return ChatMessage(
+                        out.append(ChatMessage(
                             role="tool_use",
                             tool_name=block.get("name", ""),
                             tool_input=block.get("input", {}),
                             tool_use_id=tid,
                             timestamp=ts,
-                        )
+                        ))
+                return out
 
-        return None
+        return []
 
 
 class SessionFileWatcher:
@@ -176,19 +199,31 @@ class SessionFileWatcher:
     async def _poll_loop(self) -> None:
         while self._watching:
             for sid, cwd in list(self._watching.items()):
-                new_msgs = self._parser.parse_incremental(sid, cwd)
-                if new_msgs:
-                    # Log counts per-role so we can see tool_use vs text flow
-                    counts: dict[str, int] = {}
-                    for m in new_msgs:
-                        counts[m.role] = counts.get(m.role, 0) + 1
-                    logger.info(
-                        "jsonl-watcher: session=%s new_msgs=%d %s",
-                        sid[:12], len(new_msgs),
-                        " ".join(f"{r}={c}" for r, c in counts.items()),
+                # One session's failure (Slack rate limit, network blip in the
+                # callback) must not kill the poll task — that would silently
+                # stop JSONL sync for EVERY watched session until the next
+                # user-prompt hook happens to restart it.
+                try:
+                    new_msgs = self._parser.parse_incremental(sid, cwd)
+                    if new_msgs:
+                        # Log counts per-role so we can see tool_use vs text flow
+                        counts: dict[str, int] = {}
+                        for m in new_msgs:
+                            counts[m.role] = counts.get(m.role, 0) + 1
+                        logger.info(
+                            "jsonl-watcher: session=%s new_msgs=%d %s",
+                            sid[:12], len(new_msgs),
+                            " ".join(f"{r}={c}" for r, c in counts.items()),
+                        )
+                        if self._on_new_messages:
+                            await self._on_new_messages(sid, new_msgs)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning(
+                        "jsonl-watcher: dispatch failed session=%s — continuing",
+                        sid[:12], exc_info=True,
                     )
-                    if self._on_new_messages:
-                        await self._on_new_messages(sid, new_msgs)
             await asyncio.sleep(0.5)
 
     def stop(self) -> None:

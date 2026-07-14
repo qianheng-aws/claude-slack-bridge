@@ -426,6 +426,11 @@ class StreamMixin:
             if rc:
                 had_error = bool(evt.result.get("is_error"))
                 asyncio.ensure_future(rc.finalize(error=had_error))
+                # Same controller may be registered for hook updates
+                # (thread-reply → PROCESS path). Drop that reference so it
+                # can't be re-finalized against a stale message next turn.
+                if self._reaction_controllers.get(sid) is rc:
+                    self._reaction_controllers.pop(sid, None)
 
             final_text = state.get("_full_text", "")
             if final_text:
@@ -463,16 +468,20 @@ class StreamMixin:
         if not session:
             return
 
+        # asyncio reports signal deaths as negative returncodes (-15 for
+        # SIGTERM); 143 is the shell convention for the same thing.
+        _clean_codes = (0, 143, -15)
+
         state = self._progress.get(session_id, {})
         rc_ctrl: StatusReactionController | None = state.get("_reactions")
         if rc_ctrl:
-            had_error = rc is not None and rc not in (0, 143)
+            had_error = rc is not None and rc not in _clean_codes
             asyncio.ensure_future(rc_ctrl.finalize(error=had_error))
 
         if session.mode == SessionMode.PROCESS.value:
             self._session_mgr.set_mode(session_id, SessionMode.IDLE)
             self._progress.pop(session_id, None)
-            if self._slack and rc and rc not in (0, 143):
+            if self._slack and rc and rc not in _clean_codes:
                 if rc == -9 or rc == 137:
                     msg = "\U0001f480 Claude process was killed (OOM or timeout). Please try again."
                 elif rc == 1:

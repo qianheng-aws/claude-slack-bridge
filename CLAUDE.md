@@ -57,10 +57,9 @@ All three feed into the `SessionManager` which tracks the PROCESS/HOOK/IDLE stat
 - **Loop prevention**: `CLAUDE_SLACK_BRIDGE_PRINT=1` env var is set on `--print` subprocesses so hooks skip when called from the daemon's own processes.
 - **OPTIONS extraction**: Claude can include `[OPTIONS: A | B | C]` in responses, which get parsed and rendered as clickable Slack buttons.
 
-### Two session tracking systems
+### Session tracking
 
-- `session_manager.py` — The primary system used by `Daemon`. Has the 3-state machine (PROCESS/HOOK/IDLE), `(channel_id, thread_ts)` reverse index, JSON persistence.
-- `registry.py` — Legacy system used by `http_api.py` (the hook-only HTTP API). Simpler `SessionMapping` dataclass without mode tracking.
+`session_manager.py` is the single session store used by `Daemon`: the 3-state machine (PROCESS/HOOK/IDLE), a `(channel_id, thread_ts)` reverse index (an active session's thread binding is never overwritten by a later `create()`), and JSON persistence in `sessions.json`.
 
 ### Session origin tracking
 

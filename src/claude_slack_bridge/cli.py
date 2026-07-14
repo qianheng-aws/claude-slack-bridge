@@ -26,6 +26,8 @@ def _read_env_tokens(env_file: Path) -> tuple[str, str]:
             continue
         k, v = line.split("=", 1)
         k, v = k.strip(), v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+            v = v[1:-1]
         if k == "SLACK_APP_TOKEN":
             app_tok = v
         elif k == "SLACK_BOT_TOKEN":

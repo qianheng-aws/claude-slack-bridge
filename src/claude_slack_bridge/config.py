@@ -22,6 +22,10 @@ class BridgeConfig:
     process_idle_timeout_secs: int = 600  # kill idle --print process after 10min
     claude_args: list[str] = field(default_factory=list)
     work_dir: str = ""  # cwd for claude processes; empty = home dir
+    # Slack user ID (U...) whose DM receives lazily-bound session threads.
+    # Empty = legacy behavior: first IM the bot can list (fine for a
+    # single-user app, wrong-user risk in shared workspaces).
+    owner_user_id: str = ""
     slack_app_token: str = ""
     slack_bot_token: str = ""
 
@@ -69,6 +73,10 @@ def load_config(config_dir: Path | None = None) -> BridgeConfig:
             if "=" in line:
                 k, v = line.split("=", 1)
                 k, v = k.strip(), v.strip()
+                # Tolerate quoted values — TOKEN="xoxb-..." is a common way
+                # to write env files and the quotes are not part of the token.
+                if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                    v = v[1:-1]
                 if k == "SLACK_APP_TOKEN":
                     app_token = v
                 elif k == "SLACK_BOT_TOKEN":
@@ -85,6 +93,7 @@ def load_config(config_dir: Path | None = None) -> BridgeConfig:
         process_idle_timeout_secs=file_data.get("process_idle_timeout_secs", 600),
         claude_args=file_data.get("claude_args", []),
         work_dir=file_data.get("work_dir", str(Path.home())),
+        owner_user_id=file_data.get("owner_user_id", ""),
         slack_app_token=app_token,
         slack_bot_token=bot_token,
     )

@@ -23,6 +23,9 @@ class ClaudeProcess:
     _init_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     started_at: float = field(default_factory=time.time)
     init_at: float = 0
+    # Set by terminate(): this exit is intentional (user stop / replacement /
+    # shutdown), so the reader must not fire on_exit side effects for it.
+    cancelled: bool = field(default=False, repr=False)
 
     @property
     def alive(self) -> bool:
@@ -42,6 +45,7 @@ class ClaudeProcess:
 
     async def terminate(self) -> None:
         """Gracefully terminate the process."""
+        self.cancelled = True
         if not self.alive:
             return
         self.process.send_signal(signal.SIGTERM)
@@ -98,7 +102,12 @@ class ProcessPool:
             cmd += ["--resume", session_id]
         else:
             cmd += ["--session-id", session_id]
-        # bypassPermissions works with both new and resumed sessions
+        # bypassPermissions works with both new and resumed sessions.
+        # NOTE: combined with CLAUDE_SLACK_BRIDGE_PRINT=1 (which makes hooks
+        # exit early), Slack-originated sessions run with NO permission
+        # gating at all — the PROCESS-mode approval-button flow in
+        # daemon_http's pre-tool-use handler is unreachable today. This is a
+        # deliberate single-user trade-off; revisit before any multi-user use.
         cmd += ["--permission-mode", "bypassPermissions"]
         if name:
             cmd += ["--name", name]
@@ -175,8 +184,18 @@ class ProcessPool:
         finally:
             rc = await cp.process.wait()
             logger.info("Claude process %s exited with code %s", cp.session_id, rc)
-            self._processes.pop(cp.session_id, None)
-            if on_exit:
+            # Identity-guarded pop: when start() replaces this process for the
+            # same session, the new ClaudeProcess is already registered under
+            # this key — popping by key alone would evict the replacement.
+            if self._processes.get(cp.session_id) is cp:
+                self._processes.pop(cp.session_id, None)
+            # Intentional terminations (user !stop, replacement by a new
+            # start(), daemon shutdown) must not fire exit side effects —
+            # on_exit would mark the session IDLE and post an "exited
+            # unexpectedly" error while the replacement turn is running.
+            # (No `return` here: a return in `finally` would swallow an
+            # in-flight CancelledError.)
+            if on_exit and not cp.cancelled:
                 try:
                     await on_exit(cp.session_id, rc)
                 except Exception:

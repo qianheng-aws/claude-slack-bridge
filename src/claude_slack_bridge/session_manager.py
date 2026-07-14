@@ -53,16 +53,44 @@ class SessionManager:
         thread_ts: str | None,
         mode: SessionMode = SessionMode.PROCESS,
     ) -> Session:
-        s = Session(
-            session_id=session_id,
-            session_name=session_name,
-            channel_id=channel_id,
-            thread_ts=thread_ts,
-            mode=mode.value,
-        )
-        self._sessions[session_id] = s
+        s = self._sessions.get(session_id)
+        if s is not None:
+            # Re-create with an existing ID: refresh routing fields but keep
+            # accumulated state (cwd, origin, tmux_pane_id). Replacing the
+            # object wholesale would silently drop those and break tmux
+            # forwarding / cwd-based JSONL reads for the session.
+            if s.thread_ts and self._thread_index.get((s.channel_id, s.thread_ts)) == session_id:
+                self._thread_index.pop((s.channel_id, s.thread_ts), None)
+            s.session_name = session_name
+            s.channel_id = channel_id
+            s.thread_ts = thread_ts
+            s.mode = mode.value
+            s.status = "active"
+            s.touch()
+        else:
+            s = Session(
+                session_id=session_id,
+                session_name=session_name,
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                mode=mode.value,
+            )
+            self._sessions[session_id] = s
         if thread_ts:
-            self._thread_index[(channel_id, thread_ts)] = session_id
+            # Never steal a thread that an *active* session already owns —
+            # a reply that missed find_by_thread (lost state, race) must not
+            # permanently hijack the thread's routing. The new session still
+            # exists and can post; replies keep routing to the original owner.
+            owner_id = self._thread_index.get((channel_id, thread_ts))
+            owner = self._sessions.get(owner_id) if owner_id else None
+            if owner_id and owner_id != session_id and owner and owner.status == "active":
+                logger.warning(
+                    "Thread (%s, %s) already bound to active session %s — "
+                    "NOT re-binding to new session %s",
+                    channel_id, thread_ts, owner_id, session_id,
+                )
+            else:
+                self._thread_index[(channel_id, thread_ts)] = session_id
         self._save()
         return s
 
@@ -108,27 +136,20 @@ class SessionManager:
     def archive(self, session_id: str) -> None:
         if s := self._sessions.get(session_id):
             s.status = "archived"
-            if s.thread_ts:
+            # Only drop the index entry if this session actually owns it —
+            # a session that lost the create()-time bind race points at a
+            # thread whose index entry belongs to another live session.
+            if s.thread_ts and self._thread_index.get((s.channel_id, s.thread_ts)) == session_id:
                 self._thread_index.pop((s.channel_id, s.thread_ts), None)
             self._save()
 
-    def cleanup(self, max_idle_secs: int = 86400) -> list[str]:
-        now = time.time()
-        archived = []
-        for sid, s in self._sessions.items():
-            if s.status == "active" and (now - s.last_active) > max_idle_secs:
-                s.status = "archived"
-                archived.append(sid)
-        if archived:
-            self._rebuild_index()
-            self._save()
-        return archived
-
     def _rebuild_index(self) -> None:
+        # Earliest-created session wins a contested thread, mirroring
+        # create()'s no-steal rule (dict order is not a guarantee here).
         self._thread_index = {}
-        for s in self._sessions.values():
+        for s in sorted(self._sessions.values(), key=lambda s: s.created_at):
             if s.status == "active" and s.thread_ts:
-                self._thread_index[(s.channel_id, s.thread_ts)] = s.session_id
+                self._thread_index.setdefault((s.channel_id, s.thread_ts), s.session_id)
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

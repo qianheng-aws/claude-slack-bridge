@@ -50,8 +50,9 @@ class SeenCache:
 def decode_project_dir(encoded: str) -> str:
     """Decode Claude Code project dir name back to filesystem path.
 
-    Claude encodes /local/home/user as -local-home-user.
-    We greedily try to find the longest existing path.
+    Claude encodes /local/home/user as -local-home-user. Both "/" and "."
+    become "-", so each boundary is ambiguous — we try all three separators
+    and keep the longest path that actually exists on disk.
     """
     raw = encoded.lstrip("-")
     parts = raw.split("-")
@@ -61,15 +62,21 @@ def decode_project_dir(encoded: str) -> str:
 
 
 def _try_paths(parts: list[str], idx: int, current: str, best: list[str], _depth: int = 0) -> None:
-    """Recursively try combining remaining parts with / or - to find existing dirs."""
+    """Recursively try combining remaining parts with /, - or . to find existing dirs."""
     if _depth > 20:
         return
     if idx >= len(parts):
         if os.path.isdir(current) and len(current) > len(best[0]):
             best[0] = current
         return
-    with_slash = f"{current}/{parts[idx]}"
-    _try_paths(parts, idx + 1, with_slash, best, _depth + 1)
+    # "/" closes the current component — it can only lead somewhere if what
+    # we have so far is a real directory. This prune keeps the 3-way
+    # branching (/, -, .) from exploding on long encoded names.
+    if not current or os.path.isdir(current):
+        with_slash = f"{current}/{parts[idx]}"
+        _try_paths(parts, idx + 1, with_slash, best, _depth + 1)
     if current and not current.endswith("/"):
         with_dash = f"{current}-{parts[idx]}"
         _try_paths(parts, idx + 1, with_dash, best, _depth + 1)
+        with_dot = f"{current}.{parts[idx]}"
+        _try_paths(parts, idx + 1, with_dot, best, _depth + 1)
