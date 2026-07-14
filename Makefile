@@ -1,11 +1,9 @@
 .PHONY: install test start stop status logs
 
-PYENV_PYTHON = $(HOME)/.pyenv/versions/3.10.20/bin/python3.10
-PYENV_LIB = $(HOME)/.pyenv/versions/3.10.20/lib
-export LD_LIBRARY_PATH := $(PYENV_LIB):$(LD_LIBRARY_PATH)
+PYTHON = /home/linuxbrew/.linuxbrew/opt/python@3.14/bin/python3.14
 
 install:
-	$(PYENV_PYTHON) -m venv .venv
+	$(PYTHON) -m venv --clear .venv
 	.venv/bin/pip install -e .
 
 test:
