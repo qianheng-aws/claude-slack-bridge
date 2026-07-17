@@ -321,15 +321,49 @@ def create_http_app(daemon) -> web.Application:
 
     @routes.post("/sessions/bind")
     async def bind_session(req: web.Request) -> web.Response:
-        """Bind a TUI session to a Slack DM thread (called by /sync-on)."""
+        """Bind a TUI session to a Slack DM thread (called by /sync-on).
+
+        The requested session_id comes from a *discovery script* and can be
+        wrong (2026-07-15 incident: resolver failure + newest-jsonl guess
+        bound an unrelated session while the real one hooked away unbound).
+        Hooks carry the TRUE id, so before trusting the request we cross-
+        check: if a different session has been actively hooking from the
+        same tmux pane, that session is this TUI — bind it instead and
+        report the correction.
+        """
         payload = await req.json()
         session_id = payload.get("session_id", "")
-        session_name = payload.get("name", f"TUI-{session_id[:12]}")
         cwd = payload.get("cwd", daemon._config.work_dir)
         tmux_pane_id = payload.get("tmux_pane_id", "")
 
         if not daemon._slack or not daemon._bot_user_id:
             return web.json_response({"error": "slack not connected"}, status=503)
+
+        corrected_from = ""
+        if tmux_pane_id:
+            requested = daemon._session_mgr.get(session_id)
+            requested_hooked = bool(requested and requested.tui_active)
+            if not requested_hooked:
+                now = time.time()
+                hooking = [
+                    s for s in daemon._session_mgr.list_active()
+                    if s.session_id != session_id
+                    and s.tmux_pane_id == tmux_pane_id
+                    and s.tui_active and now - s.tui_active < 3600
+                ]
+                if hooking:
+                    live = max(hooking, key=lambda s: s.tui_active)
+                    logger.warning(
+                        "bind: requested session %s never hooked, but %s is "
+                        "actively hooking from pane %s — binding that instead",
+                        session_id[:12], live.session_id[:12], tmux_pane_id,
+                    )
+                    corrected_from = session_id
+                    session_id = live.session_id
+
+        session_name = payload.get("name", "")
+        if not session_name or corrected_from:
+            session_name = f"TUI-{session_id[:12]}"
 
         session = daemon._session_mgr.get(session_id)
         if not session:
@@ -343,12 +377,15 @@ def create_http_app(daemon) -> web.Application:
         if not await daemon._ensure_slack_thread(session):
             return web.json_response({"error": "no DM channel found"}, status=404)
 
-        return web.json_response({
+        resp = {
             "ok": True,
             "channel_id": session.channel_id,
             "thread_ts": session.thread_ts,
             "session_id": session_id,
-        })
+        }
+        if corrected_from:
+            resp["corrected_from"] = corrected_from
+        return web.json_response(resp)
 
     @routes.post("/sessions/{session_id}/mute")
     async def mute_session(req: web.Request) -> web.Response:

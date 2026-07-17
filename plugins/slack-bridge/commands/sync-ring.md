@@ -9,10 +9,13 @@ you're on your phone and want to approve tools from Slack without the thread
 filling up with sync chatter.
 
 ```bash
-SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/bin/claude-slack-bridge-session-id" "$PWD")
+SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
+if [ -z "$SESSION_ID" ]; then
+    SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/bin/claude-slack-bridge-session-id" "$PWD")
+fi
 if [ -z "$SESSION_ID" ]; then
     echo "❌ Could not resolve this TUI's session_id."
-    echo "   The resolver walks up from pid $$ looking for ~/.claude/sessions/<pid>.json."
+    echo "   CLAUDE_CODE_SESSION_ID was unset and the pid-walk resolver found nothing."
     exit 1
 fi
 

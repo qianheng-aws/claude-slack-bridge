@@ -788,3 +788,126 @@ async def test_thread_reply_with_stale_question_marker_forwards_normally(
 
     assert "s-stale" not in daemon._pending_questions
     daemon._pool.start.assert_awaited()  # forwarded as a normal prompt
+
+
+# ── 2026-07-15 wrong-binding incident: bind cross-check against hook activity ──
+
+
+async def test_bind_corrects_to_actively_hooking_session(config: BridgeConfig) -> None:
+    """If the requested session never hooked but another session is actively
+    hooking from the SAME tmux pane, that session is this TUI — bind it and
+    report the correction (discovery scripts can guess wrong)."""
+    import time as _t
+    from claude_slack_bridge.daemon_http import create_http_app
+    from aiohttp.test_utils import TestServer, TestClient
+
+    daemon = _daemon_with_slack(config)
+    daemon._slack.web.conversations_list = AsyncMock(
+        return_value={"channels": [{"id": "D1"}]}
+    )
+    # The REAL session: registered by hooks, actively hooking from pane %17.
+    real = daemon._register_session("real-sid", "/proj")
+    real.tmux_pane_id = "%17"
+    real.tui_active = _t.time()
+
+    app = create_http_app(daemon)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/sessions/bind", json={
+            "session_id": "guessed-sid",  # wrong id from a discovery fallback
+            "name": "TUI-guessed",
+            "cwd": "/proj",
+            "tmux_pane_id": "%17",
+        })
+        assert resp.status == 200
+        body = await resp.json()
+
+    assert body["session_id"] == "real-sid"
+    assert body["corrected_from"] == "guessed-sid"
+    # The real session got the Slack thread (mock post_blocks → "ts.blocks").
+    assert daemon._session_mgr.get("real-sid").thread_ts == "ts.blocks"
+
+
+async def test_bind_trusts_requested_id_when_it_has_hooked(config: BridgeConfig) -> None:
+    """No correction when the requested session itself has hook activity —
+    even if another session shares the pane (e.g. a previous session in the
+    same tmux window)."""
+    import time as _t
+    from claude_slack_bridge.daemon_http import create_http_app
+    from aiohttp.test_utils import TestServer, TestClient
+
+    daemon = _daemon_with_slack(config)
+    daemon._slack.web.conversations_list = AsyncMock(
+        return_value={"channels": [{"id": "D1"}]}
+    )
+    requested = daemon._register_session("requested-sid", "/proj")
+    requested.tmux_pane_id = "%17"
+    requested.tui_active = _t.time()
+    other = daemon._register_session("other-sid", "/proj")
+    other.tmux_pane_id = "%17"
+    other.tui_active = _t.time() - 100
+
+    app = create_http_app(daemon)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/sessions/bind", json={
+            "session_id": "requested-sid", "name": "TUI-requested",
+            "cwd": "/proj", "tmux_pane_id": "%17",
+        })
+        body = await resp.json()
+
+    assert body["session_id"] == "requested-sid"
+    assert "corrected_from" not in body
+
+
+async def test_bind_without_pane_never_corrects(config: BridgeConfig) -> None:
+    """No tmux pane info → no cross-check basis → trust the request as before."""
+    import time as _t
+    from claude_slack_bridge.daemon_http import create_http_app
+    from aiohttp.test_utils import TestServer, TestClient
+
+    daemon = _daemon_with_slack(config)
+    daemon._slack.web.conversations_list = AsyncMock(
+        return_value={"channels": [{"id": "D1"}]}
+    )
+    hooked = daemon._register_session("hooked-sid", "/proj")
+    hooked.tmux_pane_id = "%17"
+    hooked.tui_active = _t.time()
+
+    app = create_http_app(daemon)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/sessions/bind", json={
+            "session_id": "fresh-sid", "name": "TUI-fresh", "cwd": "/proj",
+            "tmux_pane_id": "",
+        })
+        body = await resp.json()
+
+    assert body["session_id"] == "fresh-sid"
+    assert "corrected_from" not in body
+
+
+def test_sync_command_markdowns_have_no_jsonl_fallback() -> None:
+    """The resolver contract forbids newest-jsonl fallbacks (they bind the
+    wrong session). Pin that no sync command markdown reintroduces one, and
+    that bind-calling commands adopt the daemon's corrected session id."""
+    commands = Path(__file__).resolve().parent.parent / "plugins" / "slack-bridge" / "commands"
+    for name in ("sync-on.md", "sync-summary.md", "sync-ring.md", "sync-off.md"):
+        text = (commands / name).read_text()
+        assert "ls -t" not in text, f"{name}: newest-jsonl fallback is forbidden"
+        assert ".jsonl" not in text, f"{name}: jsonl heuristics are forbidden"
+        # Resolver stderr must not be discarded — it's the bug report.
+        assert "claude-slack-bridge-session-id\" \"$PWD\" 2>/dev/null" not in text, (
+            f"{name}: resolver diagnostics must not be silenced"
+        )
+    for name in ("sync-on.md", "sync-summary.md"):
+        text = (commands / name).read_text()
+        assert "BOUND_ID" in text, f"{name}: must adopt daemon-corrected session id"
+    # CLAUDE_CODE_SESSION_ID (documented, exported into every Bash tool
+    # subprocess) is the authoritative id source; the pid-walk resolver is
+    # only the fallback for older CC versions.
+    for name in ("sync-on.md", "sync-summary.md", "sync-ring.md", "sync-off.md"):
+        text = (commands / name).read_text()
+        assert "CLAUDE_CODE_SESSION_ID" in text, (
+            f"{name}: must prefer the documented env var over pid-walking"
+        )
+        env_pos = text.index("CLAUDE_CODE_SESSION_ID")
+        resolver_pos = text.index("claude-slack-bridge-session-id")
+        assert env_pos < resolver_pos, f"{name}: env var must be tried first"

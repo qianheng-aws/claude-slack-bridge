@@ -68,19 +68,49 @@ def _same_path(a: str, b: str) -> bool:
         return False
 
 
+def _is_path_prefix(ancestor: str, descendant: str) -> bool:
+    """True if `ancestor` is a directory prefix of `descendant` (realpathed).
+
+    Covers the "session's Bash tool cd'd into a subdirectory" case: the
+    session file records the *start* cwd (/proj), while $PWD at slash-command
+    time is deeper (/proj/src/pkg).
+    """
+    if not ancestor or not descendant:
+        return False
+    try:
+        a = os.path.realpath(ancestor)
+        d = os.path.realpath(descendant)
+    except OSError:
+        return False
+    return d == a or d.startswith(a.rstrip("/") + "/")
+
+
 def resolve_session_id(cwd: str, *, trace: list[str] | None = None) -> str | None:
+    """Find this TUI's session id by walking up the parent-process chain.
+
+    A process has exactly one ancestry, so any `interactive` ancestor with a
+    session file is already an unambiguous identification of the TUI we are
+    running inside — the recorded cwd can NOT overrule that. It is only used
+    to *prefer* among multiple matching ancestors (nested `claude` in
+    `claude`): exact cwd match first, then session-cwd-is-a-prefix-of-$PWD
+    (the session cd'd deeper), then the nearest interactive ancestor.
+    A hard cwd equality gate here previously rejected the correct session
+    whenever its Bash tool had changed directory (2026-07-15 incident).
+    """
     sessions_dir = Path.home() / ".claude" / "sessions"
     if not sessions_dir.is_dir():
         if trace is not None:
             trace.append(f"no sessions dir at {sessions_dir}")
         return None
+    # (sid, exact_cwd, prefix_cwd) per interactive ancestor, nearest first.
+    candidates: list[tuple[str, bool, bool]] = []
     pid = os.getpid()
     for _ in range(32):  # bound the walk
         pid = _ppid(pid) or 0
         if pid <= 1:
             if trace is not None:
-                trace.append("reached init (ppid<=1) with no match")
-            return None
+                trace.append("reached init (ppid<=1)")
+            break
         candidate = sessions_dir / f"{pid}.json"
         if not candidate.is_file():
             if trace is not None:
@@ -99,19 +129,36 @@ def resolve_session_id(cwd: str, *, trace: list[str] | None = None) -> str | Non
             if trace is not None:
                 trace.append(f"pid={pid}: kind={kind!r} (skip)")
             continue
-        if cwd and not _same_path(rec_cwd, cwd):
+        if not sid:
             if trace is not None:
-                trace.append(f"pid={pid}: cwd mismatch (record={rec_cwd!r} vs {cwd!r})")
+                trace.append(f"pid={pid}: no sessionId field")
             continue
-        if sid:
-            if trace is not None:
-                trace.append(f"pid={pid}: matched sessionId={sid}")
-            return str(sid)
+        exact = _same_path(rec_cwd, cwd)
+        prefix = exact or _is_path_prefix(rec_cwd, cwd)
         if trace is not None:
-            trace.append(f"pid={pid}: no sessionId field")
-    if trace is not None:
-        trace.append("walk bound (32 hops) reached")
-    return None
+            trace.append(
+                f"pid={pid}: candidate sessionId={sid} "
+                f"(cwd={'exact' if exact else 'prefix' if prefix else 'other'}: "
+                f"record={rec_cwd!r} vs {cwd!r})"
+            )
+        candidates.append((str(sid), exact, prefix))
+        if exact:
+            break  # nearest exact match cannot be beaten
+    else:
+        if trace is not None:
+            trace.append("walk bound (32 hops) reached")
+
+    if not candidates:
+        return None
+    for want_exact, want_prefix in ((True, True), (False, True), (False, False)):
+        for sid, exact, prefix in candidates:
+            if exact >= want_exact and prefix >= want_prefix:
+                if trace is not None:
+                    tier = "exact-cwd" if want_exact else (
+                        "cwd-prefix" if want_prefix else "nearest-ancestor")
+                    trace.append(f"selected sessionId={sid} ({tier})")
+                return sid
+    return None  # unreachable — last tier accepts anything
 
 
 def main() -> int:

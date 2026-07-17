@@ -9,10 +9,13 @@ dialog. Use `/slack-bridge:sync-on` to opt back into sync, or
 `/slack-bridge:sync-ring` to keep only Slack approvals.
 
 ```bash
-SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/bin/claude-slack-bridge-session-id" "$PWD")
+SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
+if [ -z "$SESSION_ID" ]; then
+    SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/bin/claude-slack-bridge-session-id" "$PWD")
+fi
 if [ -z "$SESSION_ID" ]; then
     echo "❌ Could not resolve this TUI's session_id."
-    echo "   The resolver walks up from pid $$ looking for ~/.claude/sessions/<pid>.json."
+    echo "   CLAUDE_CODE_SESSION_ID was unset and the pid-walk resolver found nothing."
     exit 1
 fi
 

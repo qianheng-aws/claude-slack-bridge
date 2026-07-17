@@ -30,24 +30,36 @@ else
     echo "✅ Daemon running"
 fi
 
-# Step 2: Resolve the real session_id of *this* TUI.
-SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/bin/claude-slack-bridge-session-id" "$PWD" 2>/dev/null)
+# Step 2: Resolve the real session_id of *this* TUI. Claude Code exports
+# CLAUDE_CODE_SESSION_ID into every Bash tool subprocess (documented;
+# updated on /clear, stable across --resume) — the authoritative source.
+# The parent-pid-walk resolver is only a fallback for older CC versions.
+# No mtime fallback: picking "newest jsonl" silently binds to the wrong
+# session (2026-07-15 incident: cd'd cwd → guessed id → all sync lost).
+SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
 if [ -z "$SESSION_ID" ]; then
-    CWD_ENCODED=$(echo "$PWD" | sed 's|^/||; s|/|-|g')
-    SESSION_DIR="$HOME/.claude/projects/-${CWD_ENCODED}"
-    [ ! -d "$SESSION_DIR" ] && SESSION_DIR=$(ls -dt $HOME/.claude/projects/-* 2>/dev/null | head -1)
-    SESSION_ID=$(basename "$(ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null | head -1)" .jsonl 2>/dev/null)
+    SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/bin/claude-slack-bridge-session-id" "$PWD")
+fi
+if [ -z "$SESSION_ID" ]; then
+    echo "❌ Could not resolve this TUI's session_id."
+    echo "   CLAUDE_CODE_SESSION_ID was unset and the pid-walk resolver found nothing."
+    echo "   If this keeps happening, file an issue with the output of:"
+    echo "     SLACK_BRIDGE_RESOLVER_DEBUG=1 \"${CLAUDE_PLUGIN_ROOT}/bin/claude-slack-bridge-session-id\" \"\$PWD\""
+    exit 1
 fi
 
-if [ -z "$SESSION_ID" ]; then
-    echo "⚠️ No session found"
-    exit 0
-fi
-
-# Step 3: Bind the session so the Q&A log has a Slack thread to land in
+# Step 3: Bind the session so the Q&A log has a Slack thread to land in.
+# The daemon may CORRECT the id (it trusts hook activity from this tmux
+# pane over our discovery) — always adopt the id it echoes back, so the
+# mute call below targets the session that will actually produce events.
 RESULT=$(curl -s -X POST http://127.0.0.1:7778/sessions/bind \
   -H "Content-Type: application/json" \
   -d "{\"session_id\": \"$SESSION_ID\", \"name\": \"TUI-${SESSION_ID:0:12}\", \"cwd\": \"$PWD\", \"tmux_pane_id\": \"${TMUX_PANE:-}\"}")
+BOUND_ID=$(echo "$RESULT" | sed -n 's/.*"session_id": *"\([^"]*\)".*/\1/p')
+if [ -n "$BOUND_ID" ] && [ "$BOUND_ID" != "$SESSION_ID" ]; then
+    echo "ℹ️ Daemon corrected session id: $SESSION_ID → $BOUND_ID (matched by hook activity)"
+    SESSION_ID="$BOUND_ID"
+fi
 echo "$RESULT" | grep -q '"ok"' && echo "✅ Session $SESSION_ID bound to Slack" || echo "⚠️ Bind: $RESULT"
 
 # Step 4: Set summary-only mute level

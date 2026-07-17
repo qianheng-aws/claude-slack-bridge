@@ -71,16 +71,61 @@ def test_resolves_via_parent_chain(
     assert resolver.resolve_session_id("/proj/a") == "real-sid"
 
 
-def test_skips_mismatched_cwd(
+def test_prefers_exact_cwd_over_nearer_mismatch(
     fake_home: Path, resolver: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Nearest ancestor is a session for a DIFFERENT cwd — resolver must skip it
-    # and keep walking rather than claim that session.
+    # Nearest ancestor is a session for a DIFFERENT cwd; a farther ancestor
+    # matches exactly — the exact match must win.
     _write_session(fake_home, 500, cwd="/proj/other", sessionId="wrong")
     _write_session(fake_home, 900, cwd="/proj/mine", sessionId="right")
     _patch_parent_chain(monkeypatch, resolver, [100, 500, 900, 1])
 
     assert resolver.resolve_session_id("/proj/mine") == "right"
+
+
+def test_cwd_mismatch_does_not_reject_sole_ancestor(
+    fake_home: Path, resolver: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: 2026-07-15 wrong-binding incident. The session's Bash tool
+    cd'd into a subdirectory, so $PWD no longer equals the session's START
+    cwd recorded in the file. The old hard cwd gate returned 'not found' for
+    a session the walk had already unambiguously located — a process has one
+    ancestry, so the sole interactive ancestor IS this TUI."""
+    _write_session(
+        fake_home, 593696, cwd="/workplace/qianheng/AOS",
+        sessionId="4f34b8ca-838f-4bdf-a3de-cdecc2c0670f",
+    )
+    _patch_parent_chain(monkeypatch, resolver, [2403108, 593696, 584929, 1])
+
+    got = resolver.resolve_session_id(
+        "/workplace/qianheng/AOS/src/AWSSearchServiceModelFineTuneECSTasks"
+    )
+    assert got == "4f34b8ca-838f-4bdf-a3de-cdecc2c0670f"
+
+
+def test_prefix_match_beats_unrelated_cwd(
+    fake_home: Path, resolver: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Nested claude-in-claude: nearest ancestor started in an unrelated dir,
+    # farther one started in an ancestor dir of $PWD (it cd'd deeper).
+    # Prefix match outranks the nearer non-matching candidate.
+    _write_session(fake_home, 500, cwd="/somewhere/else", sessionId="unrelated")
+    _write_session(fake_home, 900, cwd="/proj", sessionId="prefix-match")
+    _patch_parent_chain(monkeypatch, resolver, [100, 500, 900, 1])
+
+    assert resolver.resolve_session_id("/proj/src/pkg") == "prefix-match"
+
+
+def test_nearest_wins_within_same_tier(
+    fake_home: Path, resolver: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Two ancestors, neither matching cwd at all — the NEAREST one is the
+    # TUI we're actually running inside.
+    _write_session(fake_home, 500, cwd="/a", sessionId="near")
+    _write_session(fake_home, 900, cwd="/b", sessionId="far")
+    _patch_parent_chain(monkeypatch, resolver, [100, 500, 900, 1])
+
+    assert resolver.resolve_session_id("/elsewhere") == "near"
 
 
 def test_skips_non_interactive_kind(
@@ -211,9 +256,9 @@ def test_trace_logs_each_candidate(
     trace: list[str] = []
     assert resolver.resolve_session_id("/proj/a", trace=trace) == "right"
     blob = "\n".join(trace)
-    assert "cwd mismatch" in blob  # pid=500 branch
+    assert "cwd=other" in blob  # pid=500: non-matching cwd, still a candidate
     assert "kind='print'" in blob or 'kind="print"' in blob  # pid=700 branch
-    assert "matched sessionId=right" in blob  # pid=900 branch
+    assert "selected sessionId=right (exact-cwd)" in blob  # pid=900 wins
 
 
 def test_ppid_falls_back_to_ps_when_procfs_absent(
